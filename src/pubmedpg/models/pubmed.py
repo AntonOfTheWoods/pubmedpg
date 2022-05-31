@@ -10,7 +10,7 @@
 
 from sqlalchemy import *
 from sqlalchemy.orm import relation, backref
-from pubmed_portable.db.base import Base
+from pubmedpg.db.base import Base
 
 """
     Build tables, classes, and mappings

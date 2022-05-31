@@ -1,10 +1,24 @@
 services:
   db:
+    ports:
+      - "25432:5432"
     image: postgres:15beta1
     volumes:
       - db-data:/var/lib/postgresql/data
     env_file:
       - .env
+  pubmedpg:
+    image: pubmedpg
+    volumes:
+      - files-data:/opt/pubmedpg
+      - ./src:/app
+    env_file:
+      - .env
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: ${INSTALL_DEV-false}
 
 volumes:
   db-data:

@@ -1,4 +1,4 @@
-from pubmed_portable.core.config import settings
+from pubmedpg.core.config import settings
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 

@@ -17,7 +17,7 @@ RUN curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/get-
   ln -s /opt/poetry/bin/poetry && \
   poetry config virtualenvs.create false
 
-COPY ./app/pyproject.toml ./backend/app/poetry.lock* /app/
+COPY ./pyproject.toml ./poetry.lock* /app/
 
 # Allow installing dev dependencies to run tests
 ARG INSTALL_DEV=false
@@ -29,9 +29,7 @@ RUN apt-get remove -y --purge \
   && apt-get -y autoremove && apt-get -y clean \
   && rm -rf /var/lib/apt/lists/*
 
-COPY ./backend/app /app
+COPY ./src /app
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-
-EXPOSE 80

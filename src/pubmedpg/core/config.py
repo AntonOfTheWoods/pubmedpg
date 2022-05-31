@@ -38,7 +38,7 @@ class Settings(BaseSettings):
             },
         }
 
-    PROJECT_NAME: str = "PubMedPortable"
+    PROJECT_NAME: str = "pubmedpg"
 
     POSTGRES_SERVER: str
     POSTGRES_USER: str

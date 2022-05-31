@@ -1,4 +1,4 @@
-from pubmed_portable import __version__
+from pubmedpg import __version__
 
 
 def test_version():
