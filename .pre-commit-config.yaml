@@ -3,7 +3,7 @@ repos:
     rev: 22.3.0
     hooks:
       - id: black
-        args: [--line-length, "120", "--experimental-string-processing"]
+        args: [--line-length, "120", "--preview"]
         language_version: python3.10
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.2.0

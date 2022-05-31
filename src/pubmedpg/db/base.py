@@ -2,4 +2,5 @@
 # imported by Alembic
 # flake8: noqa
 # pylint: disable=W0611
+import pubmedpg.models
 from pubmedpg.db.base_class import Base
