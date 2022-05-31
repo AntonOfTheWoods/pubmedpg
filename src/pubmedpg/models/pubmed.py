@@ -646,7 +646,7 @@ class Investigator(Base):
     )
 
 
-class Notes(Base):
+class Note(Base):
     # fk_pmid = Column(Integer, nullable=False)
     pmid = Column(
         ForeignKey("citation.pmid", deferrable=True, initially="DEFERRED", ondelete="CASCADE", onupdate="CASCADE"),
