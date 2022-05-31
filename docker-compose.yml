@@ -1,0 +1,11 @@
+services:
+  db:
+    image: postgres:15beta1
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    env_file:
+      - .env
+
+volumes:
+  db-data:
+  files-data:
