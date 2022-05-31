@@ -108,6 +108,8 @@ class MedlineParser:
         loop_counter = 0  # to check for memory usage each X loops
         async with async_session() as db:
             for event, elem in context:
+                print("my event is", event)
+                print("my elem is", elem)
 
                 if event == "end":
                     if elem.tag == "MedlineCitation" or elem.tag == "BookDocument":
