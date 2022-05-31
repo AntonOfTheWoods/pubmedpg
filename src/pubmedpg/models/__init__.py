@@ -15,7 +15,7 @@ from .pubmed import (  # noqa: F401
     Keyword,
     Language,
     MeshHeading,
-    Notes,
+    Note,
     OtherAbstract,
     OtherId,
     PersonalName,

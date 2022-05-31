@@ -1,8 +1,8 @@
 """create account table
 
-Revision ID: 881b8f8f05d6
+Revision ID: 84a40922c9c1
 Revises:
-Create Date: 2022-05-31 07:59:42.404766
+Create Date: 2022-05-31 08:53:32.589341
 
 """
 import sqlalchemy as sa
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "881b8f8f05d6"
+revision = "84a40922c9c1"
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -257,7 +257,7 @@ def upgrade():
     )
     op.create_index(op.f("ix_mesh_heading_descriptor_ui"), "mesh_heading", ["descriptor_ui"], unique=False)
     op.create_table(
-        "notes",
+        "note",
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("general_note", sa.String(length=2000), nullable=False),
         sa.Column("general_note_owner", sa.String(length=20), nullable=True),
@@ -388,7 +388,7 @@ def downgrade():
     op.drop_index(op.f("ix_other_id_other_id"), table_name="other_id")
     op.drop_table("other_id")
     op.drop_table("other_abstract")
-    op.drop_table("notes")
+    op.drop_table("note")
     op.drop_index(op.f("ix_mesh_heading_descriptor_ui"), table_name="mesh_heading")
     op.drop_table("mesh_heading")
     op.drop_table("language")
