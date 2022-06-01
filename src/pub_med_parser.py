@@ -756,11 +756,9 @@ def run(medline_path, start, end, processes):
         for filename in files:
             if os.path.splitext(filename)[-1] in [".xml", ".gz"]:
                 paths.append(os.path.join(root, filename))
-
     paths.sort()
 
     pool = Pool(processes=processes)  # start with processors
-    print("Initialized with ", processes, "processes")
     result = pool.map_async(
         _start_parser,
         [
@@ -782,11 +780,13 @@ def run(medline_path, start, end, processes):
 
 
 if __name__ == "__main__":
-    start = os.environ.get("START", 0)
-    end = os.environ.get("END", None)
-    processes = os.environ.get("PROCESSES", 2)
-    medline_path = os.environ.get("MEDLINE_PATH", "data/xmls/")
-    clean = str(os.environ.get("CLEAN", True)).lower() == "true"
+    start = os.environ.get("PMPG_FILELIST_START", 0)
+    end = os.environ.get("PMPG_FILELIST_END", None)
+    processes = os.environ.get("PMPG_PROCESSES", 2)
+    medline_path = os.environ.get("PMPG_MEDLINE_PATH", "data/xmls/")
+    clean = str(os.environ.get("PMPG_CLEAN", False)).lower() == "true"
+
+    print(f"Launching with {start=}, {end=}, {processes=}t, {medline_path=}, {clean=}")
     # log start time of programme:
     start = time.asctime()
     run(medline_path, clean, int(start), end, int(processes))
