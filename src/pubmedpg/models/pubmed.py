@@ -19,7 +19,7 @@ class Citation(Base):
     date_created = Column(Date)
     date_completed = Column(Date, index=True)
     date_revised = Column(Date, index=True)
-    number_of_references = Column(Integer, default="0")
+    number_of_references = Column(Integer, default=0)
     keyword_list_owner = Column(String(30))
     citation_owner = Column(String(30), default="NLM")
     citation_status = Column(String(50))
@@ -841,7 +841,7 @@ class Grant(Base):
 
 
 class PublicationType(Base):
-    fk_pmid = Column(Integer, nullable=False)
+    # fk_pmid = Column(Integer, nullable=False)
     pmid = Column(
         ForeignKey("citation.pmid", deferrable=True, initially="DEFERRED", ondelete="CASCADE", onupdate="CASCADE"),
         primary_key=True,

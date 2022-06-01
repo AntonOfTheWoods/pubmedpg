@@ -9,10 +9,8 @@ from multiprocessing import Pool
 
 from sqlalchemy import select
 
-# from sqlalchemy import *
-from sqlalchemy.exc import IntegrityError
-
-from pubmedpg.db.session import async_session
+from pubmedpg.db.base import Base
+from pubmedpg.db.session import engine, get_session, sync_session
 from pubmedpg.models.pubmed import (
     Abstract,
     Accession,
@@ -40,10 +38,6 @@ from pubmedpg.models.pubmed import (
     SupplMeshName,
     XmlFile,
 )
-
-# import PubMedDB
-# from sqlalchemy.orm import *
-
 
 WARNING_LEVEL = "always"  # error, ignore, always, default, module, once
 # multiple processes, #processors-1 is optimal!
@@ -75,9 +69,8 @@ class MedlineParser:
         # Session = sessionmaker(bind=engine)
         self.filepath = filepath
         # self.session = Session()
-        # async with async_session() as db:
 
-    async def _parse(self):
+    async def _parse(self, check_existing):
         _file = self.filepath
 
         """
@@ -86,6 +79,8 @@ class MedlineParser:
             print self.filepath, 'already in DB'
             return True
         """
+
+        print("Parsing file:", _file)
 
         if os.path.splitext(_file)[-1] == ".gz":
             _file = gzip.open(_file, "rb")
@@ -106,11 +101,8 @@ class MedlineParser:
         DBXMLFile.time_processed = datetime.datetime.now()  # time.localtime()
 
         loop_counter = 0  # to check for memory usage each X loops
-        async with async_session() as db:
+        async with get_session() as db:
             for event, elem in context:
-                print("my event is", event)
-                print("my elem is", elem)
-
                 if event == "end":
                     if elem.tag == "MedlineCitation" or elem.tag == "BookDocument":
                         loop_counter += 1
@@ -127,51 +119,53 @@ class MedlineParser:
 
                         pubmed_id = int(elem.find("PMID").text)
                         DBCitation.pmid = pubmed_id
+                        # print("trying to find", pubmed_id)
 
-                        try:
+                        # try:
+                        same_pmid = None
+                        if check_existing:
                             result = await db.execute(select(Citation).where(Citation.pmid == pubmed_id))
                             same_pmid = result.scalars().all()
 
-                            # same_pmid = await db.query(Citation).filter(Citation.pmid == pubmed_id).all()
-                            # The following condition is only for incremental updates.
+                        # same_pmid = await db.query(Citation).filter(Citation.pmid == pubmed_id).all()
+                        # The following condition is only for incremental updates.
 
-                            """
-                            # Implementation that replaces the database entry with the new article from the XML file.
-                            if same_pmid: # -> evt. any()
-                                same_pmid = same_pmid[0]
-                                warnings.warn('\nDoubled Citation found (%s).' % pubmed_id)
-                                if not same_pmid.date_revised or same_pmid.date_revised < DBCitation.date_revised:
-                                    warnings.warn('\nReplace old Citation. Old Citation from %s, new citation from %s.' % (same_pmid.date_revised, DBCitation.date_revised) )
-                                    self.session.delete( same_pmid )
-                                    self.session.commit()
-                                    DBCitation.xml_files = [DBXMLFile] # adds an implicit add()
-                                    self.session.add( DBCitation )
-                            """
+                        """
+                        # Implementation that replaces the database entry with the new article from the XML file.
+                        if same_pmid: # -> evt. any()
+                            same_pmid = same_pmid[0]
+                            warnings.warn('\nDoubled Citation found (%s).' % pubmed_id)
+                            if not same_pmid.date_revised or same_pmid.date_revised < DBCitation.date_revised:
+                                warnings.warn('\nReplace old Citation. Old Citation from %s, new citation from %s.' % (same_pmid.date_revised, DBCitation.date_revised) )
+                                self.session.delete( same_pmid )
+                                self.session.commit()
+                                DBCitation.xml_files = [DBXMLFile] # adds an implicit add()
+                                self.session.add( DBCitation )
+                        """
 
-                            # Keep database entry that is already saved in database and continue with the next PubMed-ID.
-                            # Manually deleting entries is possible (with PGAdmin3 or via command-line), e.g.:
-                            # DELETE FROM pubmed.tbl_medline_citation WHERE pmid = 25005691;
-                            if same_pmid:
-                                print(
-                                    "Article already in database - "
-                                    + str(same_pmid[0])
-                                    + "Continuing with next PubMed-ID"
-                                )
-                                DBCitation = Citation()
-                                DBJournal = Journal()
-                                elem.clear()
-                                await db.commit()
-                                continue
-                            else:
-                                DBCitation.xml_files = [DBXMLFile]  # adds an implicit add()
-                                db.add(DBCitation)
+                        # Keep database entry that is already saved in database and continue with the next PubMed-ID.
+                        # Manually deleting entries is possible (with PGAdmin3 or via command-line), e.g.:
+                        # DELETE FROM pubmed.tbl_medline_citation WHERE pmid = 25005691;
+                        if same_pmid:
+                            print(
+                                "Article already in database - " + str(same_pmid[0]) + "Continuing with next PubMed-ID"
+                            )
+                            DBCitation = Citation()
+                            DBJournal = Journal()
+                            elem.clear()
+                            await db.commit()
+                            continue
+                        else:
+                            DBCitation.xml_files = [DBXMLFile]  # adds an implicit add()
+                            db.add(DBCitation)
 
-                            if loop_counter % 1000 == 0:
-                                await db.commit()
+                        if loop_counter % 5000 == 0:
+                            print("Committing on:", _file)
+                            await db.commit()
 
-                        except IntegrityError as error:
-                            warnings.warn("\nIntegrityError: " + str(error), Warning)
-                            await db.rollback()
+                        # except IntegrityError as error:
+                        #     warnings.warn("\nIntegrityError: " + str(error), Warning)
+                        #     await db.rollback()
                         # except Exception as e:
                         #     warnings.warn("\nUnknown error:" + str(e), Warning)
                         #     await db.rollback()
@@ -222,7 +216,7 @@ class MedlineParser:
                         DBCitation.date_revised = date
 
                     if elem.tag == "NumberOfReferences":
-                        DBCitation.number_of_references = elem.text
+                        DBCitation.number_of_references = int(elem.text) if elem.text else 0
 
                     if elem.tag == "ISSN":
                         DBJournal.issn = elem.text
@@ -244,7 +238,7 @@ class MedlineParser:
                                     DBJournal.medline_date = subelem.text
                             elif subelem.tag == "Year":
                                 year = True
-                                DBJournal.pub_date_year = subelem.text
+                                DBJournal.pub_date_year = int(subelem.text) if subelem.text else None
                             elif subelem.tag == "Month":
                                 if subelem.text in month_code:
                                     DBJournal.pub_date_month = month_code[subelem.text]
@@ -439,7 +433,7 @@ class MedlineParser:
                             comment_pmid_version = comment.find("PMID")
 
                             if comment_pmid_version is not None:
-                                DBComment.pmid_version = comment_pmid_version.text
+                                DBComment.pmid_version = int(comment_pmid_version.text)
                             DBCitation.comments.append(DBComment)
 
                     if elem.tag == "MedlineJournalInfo":
@@ -616,7 +610,7 @@ class MedlineParser:
                         temp_abstract_text = ""
                         # if there are multiple AbstractText-Tags:
                         if elem.find("AbstractText") is not None and len(elem.findall("AbstractText")) > 1:
-                            for child_AbstractText in elem.getchildren():
+                            for child_AbstractText in list(elem):
                                 # iteration over all labels is needed otherwise only "OBJECTIVE" would be pushed into database
                                 # debug: check label
                                 # [('NlmCategory', 'METHODS'), ('Label', 'CASE SUMMARY')]
@@ -713,6 +707,7 @@ class MedlineParser:
                             DBCitation.suppl_mesh_names.append(DBSupplMeshName)
 
             await db.commit()
+            # await db.close()
         return True
 
 
@@ -725,28 +720,43 @@ def get_memory_usage(pid=os.getpid(), format="%mem"):
     return float(os.popen("ps -p %d -o %s | tail -1" % (pid, format)).read().strip())
 
 
-def _start_parser(path):
+def _start_parser(path_and_check):
     """
     Used to start MultiProcessor Parsing
     """
-    print(path, "\tpid:", os.getpid())
-    p = MedlineParser(path)
-    asyncio.run(p._parse())
-    return path
+    print(path_and_check, "\tpid:", os.getpid())
+    asyncio.run(MedlineParser(path_and_check[0])._parse(path_and_check[1]))
+    return path_and_check[1]
 
 
-# uses global variable "db" because of result.get()
-def run(medline_path, start, end, PROCESSES):
-    # con = 'postgresql://parser:parser@localhost/'+db
+async def gather_with_concurrency(n, *tasks):
+    semaphore = asyncio.Semaphore(n)
+
+    async def sem_task(task):
+        async with semaphore:
+            return await task
+
+    return await asyncio.gather(*(sem_task(task) for task in tasks))
+
+
+def refresh_tables():
+    try:
+        Base.metadata.drop_all(engine)
+        Base.metadata.create_all(engine)
+    except Exception:
+        print("Can't refresh tables")
+        raise
+
+
+def run(medline_path, start, end, processes):
+    with sync_session.begin() as session:
+        check_existing = session.query(Citation).count() > 0
 
     if end is not None:
         end = int(end)
 
-    # if clean:
-    #     PubMedDB.create_tables(db)
-
-    # PubMedDB.init(db)
-
+    if clean:
+        refresh_tables()
     paths = []
     for root, dirs, files in os.walk(medline_path):
         for filename in files:
@@ -755,15 +765,26 @@ def run(medline_path, start, end, PROCESSES):
 
     paths.sort()
 
-    pool = Pool(processes=PROCESSES)  # start with processors
-    print("Initialized with ", PROCESSES, "processes")
-    # result.get() needs global variable db now - that is why a line "db = options.database" is added in "__main__" - the variable db cannot be given to __start_parser in map_async()
-    result = pool.map_async(_start_parser, paths[start:end])
+    pool = Pool(processes=processes)  # start with processors
+    print("Initialized with ", processes, "processes")
+    result = pool.map_async(
+        _start_parser,
+        [
+            (
+                path,
+                check_existing,
+            )
+            for path in paths[start:end]
+        ],
+    )
     result.get()
 
     # without multiprocessing:
     # for path in paths:
     #    _start_parser(path)
+
+    # with async
+    # asyncio.run(gather_with_concurrency(10, *([MedlineParser(apath)._parse() for apath in paths[start:end]])))
 
     print("######################")
     print("###### Finished ######")
@@ -771,55 +792,14 @@ def run(medline_path, start, end, PROCESSES):
 
 
 if __name__ == "__main__":
-    from optparse import OptionParser
-
-    parser = OptionParser()
-    # parser.add_option("-c", "--no_cleaning", dest="clean",
-    #                   action="store_false", default=True,
-    #                   help="Truncate the Database before running the parser (default: True).")
-    parser.add_option(
-        "-s",
-        "--start",
-        dest="start",
-        default=0,
-        help=(
-            "All queued files are passed if no start and end parameter is set. Otherwise you can specify a start and"
-            " end o the queue. For example to split the parsing on several machines."
-        ),
-    )
-    parser.add_option(
-        "-e",
-        "--end",
-        dest="end",
-        default=None,
-        help=(
-            "All queued files are passed if no start and end parameter is set. Otherwise you can specify a start and"
-            " end o the queue. For example to split the parsing on several machines."
-        ),
-    )
-    parser.add_option(
-        "-i",
-        "--input",
-        dest="medline_path",
-        default="data/xmls/",
-        help="specify the path to the medine XML-Files (default: data/xmls/)",
-    )
-    parser.add_option(
-        "-p", "--processes", dest="PROCESSES", default=2, help="How many processes should be used. (Default: 2)"
-    )
-    parser.add_option(
-        "-d",
-        "--database",
-        dest="database",
-        default="pubmedpg",
-        help="What is the name of the database. (Default: pubmedpg)",
-    )
-
-    (options, args) = parser.parse_args()
-    # db = options.database
+    start = os.environ.get("START", 0)
+    end = os.environ.get("END", None)
+    processes = os.environ.get("PROCESSES", 2)
+    medline_path = os.environ.get("MEDLINE_PATH", "data/xmls/")
+    clean = str(os.environ.get("CLEAN", True)).lower() == "true"
     # log start time of programme:
     start = time.asctime()
-    run(options.medline_path, int(options.start), options.end, int(options.PROCESSES))
+    run(medline_path, clean, int(start), end, int(processes))
     # end time programme
     end = time.asctime()
 
