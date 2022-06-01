@@ -65,10 +65,7 @@ month_code = {
 class MedlineParser:
     # db is a global variable and given to MedlineParser(path,db) in _start_parser(path)
     def __init__(self, filepath):
-        # engine, Base = PubMedDB.init(db)
-        # Session = sessionmaker(bind=engine)
         self.filepath = filepath
-        # self.session = Session()
 
     async def _parse(self, check_existing):
         _file = self.filepath
@@ -119,7 +116,6 @@ class MedlineParser:
 
                         pubmed_id = int(elem.find("PMID").text)
                         DBCitation.pmid = pubmed_id
-                        # print("trying to find", pubmed_id)
 
                         # try:
                         same_pmid = None
@@ -127,9 +123,7 @@ class MedlineParser:
                             result = await db.execute(select(Citation).where(Citation.pmid == pubmed_id))
                             same_pmid = result.scalars().all()
 
-                        # same_pmid = await db.query(Citation).filter(Citation.pmid == pubmed_id).all()
                         # The following condition is only for incremental updates.
-
                         """
                         # Implementation that replaces the database entry with the new article from the XML file.
                         if same_pmid: # -> evt. any()
@@ -707,7 +701,7 @@ class MedlineParser:
                             DBCitation.suppl_mesh_names.append(DBSupplMeshName)
 
             await db.commit()
-            # await db.close()
+            await db.connection.close()
         return True
 
 
@@ -786,10 +780,6 @@ def run(medline_path, start, end, processes):
     # with async
     # asyncio.run(gather_with_concurrency(10, *([MedlineParser(apath)._parse() for apath in paths[start:end]])))
 
-    print("######################")
-    print("###### Finished ######")
-    print("######################")
-
 
 if __name__ == "__main__":
     start = os.environ.get("START", 0)
@@ -803,5 +793,6 @@ if __name__ == "__main__":
     # end time programme
     end = time.asctime()
 
-    print("programme started - " + start)
-    print("programme ended - " + end)
+    print("############################################################")
+    print(f"Programme started: {start} - ended: {end}")
+    print("############################################################")
