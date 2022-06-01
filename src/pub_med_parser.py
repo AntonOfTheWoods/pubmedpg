@@ -10,7 +10,7 @@ from multiprocessing import Pool
 from sqlalchemy import select
 
 from pubmedpg.db.base import Base
-from pubmedpg.db.session import engine, get_session, sync_session
+from pubmedpg.db.session import get_session, sync_engine, sync_session
 from pubmedpg.models.pubmed import (
     Abstract,
     Accession,
@@ -735,14 +735,14 @@ async def gather_with_concurrency(n, *tasks):
 
 def refresh_tables():
     try:
-        Base.metadata.drop_all(engine)
-        Base.metadata.create_all(engine)
+        Base.metadata.drop_all(sync_engine)
+        Base.metadata.create_all(sync_engine)
     except Exception:
         print("Can't refresh tables")
         raise
 
 
-def run(medline_path, start, end, processes):
+def run(medline_path, clean, start, end, processes):
     with sync_session.begin() as session:
         check_existing = session.query(Citation).count() > 0
 
@@ -787,6 +787,9 @@ if __name__ == "__main__":
     clean = str(os.environ.get("PMPG_CLEAN", False)).lower() == "true"
 
     print(f"Launching with {start=}, {end=}, {processes=}t, {medline_path=}, {clean=}")
+    import sys
+
+    sys.exit(0)
     # log start time of programme:
     start = time.asctime()
     run(medline_path, clean, int(start), end, int(processes))
