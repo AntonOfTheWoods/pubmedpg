@@ -13,6 +13,19 @@ from pubmedpg.db.base import Base
     http://www.nlm.nih.gov/bsd/licensee/elements_descriptions.html
 """
 
+OWNER_ENUM = Enum("NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM", name="owner")
+STATUS_ENUM = Enum(
+    "In-Data-Review",
+    "In-Process",
+    "MEDLINE",
+    "OLDMEDLINE",
+    "PubMed-not-MEDLINE",
+    "Publisher",
+    "Completed",
+    name="status",
+)
+YESNO_ENUM = Enum("Y", "N", "y", "n", name="yesno")
+
 
 class Citation(Base):
     pmid = Column(Integer, nullable=False, primary_key=True)
@@ -20,19 +33,17 @@ class Citation(Base):
     date_completed = Column(Date, index=True)
     date_revised = Column(Date, index=True)
     number_of_references = Column(Integer, default=0)
-    keyword_list_owner = Column(Enum(["NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM"]))
-    citation_owner = Column(Enum(["NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM"]), default="NLM")
-    citation_status = Column(
-        Enum(["In-Data-Review", "In-Process", "MEDLINE", "OLDMEDLINE", "PubMed-not-MEDLINE", "Publisher", "Completed"])
-    )
+    keyword_list_owner = Column(OWNER_ENUM)
+    citation_owner = Column(OWNER_ENUM, default="NLM")
+    citation_status = Column(STATUS_ENUM)
     article_title = Column(String(4000), nullable=False)
     start_page = Column(String(10))
     end_page = Column(String(10))
     medline_pgn = Column(String(200))
     article_affiliation = Column(String(2000))
-    article_author_list_comp_yn = Column(Enum(["Y", "N", "y", "n"]), default="Y")
-    data_bank_list_complete_yn = Column(Enum(["Y", "N", "y", "n"]), default="Y")
-    grant_list_complete_yn = Column(Enum(["Y", "N", "y", "n"]), default="Y")
+    article_author_list_comp_yn = Column(YESNO_ENUM, default="Y")
+    data_bank_list_complete_yn = Column(YESNO_ENUM, default="Y")
+    grant_list_complete_yn = Column(YESNO_ENUM, default="Y")
     vernacular_title = Column(String(4000))
 
     def __repr__(self):
@@ -204,7 +215,7 @@ class MeshHeading(Base):
         primary_key=True,
     )
     descriptor_name = Column(String(500), primary_key=True)
-    descriptor_name_major_yn = Column(Enum(["Y", "N", "y", "n"]), default="N")
+    descriptor_name_major_yn = Column(YESNO_ENUM, default="N")
     descriptor_ui = Column(String(10), index=True)
 
     def __repr__(self):
@@ -222,7 +233,7 @@ class Qualifier(Base):
     )
     descriptor_name = Column(String(500), index=True, primary_key=True)
     qualifier_name = Column(String(500), index=True, primary_key=True)
-    qualifier_name_major_yn = Column(Enum(["Y", "N", "y", "n"]), default="N")
+    qualifier_name_major_yn = Column(YESNO_ENUM, default="N")
     qualifier_ui = Column(String(10), index=True)
 
     def __repr__(self):
@@ -290,7 +301,7 @@ class Keyword(Base):
         primary_key=True,
     )
     keyword = Column(String(500), nullable=False, index=True, primary_key=True)
-    keyword_major_yn = Column(Enum(["Y", "N", "y", "n"]), default="N")
+    keyword_major_yn = Column(YESNO_ENUM, default="N")
 
     def __repr__(self):
         return f"Keyword ({self.keyword}, {self.keyword_major_yn})"
@@ -345,7 +356,7 @@ class Note(Base):
         primary_key=True,
     )
     general_note = Column(String(2000), nullable=False, primary_key=True)
-    general_note_owner = Column(Enum(["NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM"]))
+    general_note_owner = Column(OWNER_ENUM)
 
     def __repr__(self):
         return f"Keyword ({self.general_note}, {self.general_note_owner})"

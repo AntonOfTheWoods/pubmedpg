@@ -1,8 +1,8 @@
-"""create account table
+"""Initial db structure
 
-Revision ID: 2084deb7f2ef
+Revision ID: ae0374b367af
 Revises:
-Create Date: 2022-05-31 10:16:23.059239
+Create Date: 2022-06-02 04:09:19.781593
 
 """
 import sqlalchemy as sa
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "2084deb7f2ef"
+revision = "ae0374b367af"
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -25,32 +25,39 @@ def upgrade():
         sa.Column("date_completed", sa.Date(), nullable=True),
         sa.Column("date_revised", sa.Date(), nullable=True),
         sa.Column("number_of_references", sa.Integer(), nullable=True),
-        sa.Column("keyword_list_owner", sa.String(length=30), nullable=True),
-        sa.Column("citation_owner", sa.String(length=30), nullable=True),
-        sa.Column("citation_status", sa.String(length=50), nullable=True),
+        sa.Column(
+            "keyword_list_owner",
+            sa.Enum("NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM", name="owner"),
+            nullable=True,
+        ),
+        sa.Column(
+            "citation_owner",
+            sa.Enum("NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM", name="owner"),
+            nullable=True,
+        ),
+        sa.Column(
+            "citation_status",
+            sa.Enum(
+                "In-Data-Review",
+                "In-Process",
+                "MEDLINE",
+                "OLDMEDLINE",
+                "PubMed-not-MEDLINE",
+                "Publisher",
+                "Completed",
+                name="status",
+            ),
+            nullable=True,
+        ),
         sa.Column("article_title", sa.String(length=4000), nullable=False),
         sa.Column("start_page", sa.String(length=10), nullable=True),
         sa.Column("end_page", sa.String(length=10), nullable=True),
         sa.Column("medline_pgn", sa.String(length=200), nullable=True),
         sa.Column("article_affiliation", sa.String(length=2000), nullable=True),
-        sa.Column("article_author_list_comp_yn", sa.String(length=1), nullable=True),
-        sa.Column("data_bank_list_complete_yn", sa.String(length=1), nullable=True),
-        sa.Column("grant_list_complete_yn", sa.String(length=1), nullable=True),
+        sa.Column("article_author_list_comp_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
+        sa.Column("data_bank_list_complete_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
+        sa.Column("grant_list_complete_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
         sa.Column("vernacular_title", sa.String(length=4000), nullable=True),
-        sa.CheckConstraint("article_author_list_comp_yn IN ('Y', 'N', 'y', 'n')", name="ck4_citation"),
-        sa.CheckConstraint(
-            "citation_owner IN ('NLM', 'NASA', 'PIP', 'KIE', 'HSR', 'HMD', 'SIS', 'NOTNLM')", name="ck2_citation"
-        ),
-        sa.CheckConstraint(
-            "citation_status IN ('In-Data-Review', 'In-Process', 'MEDLINE', 'OLDMEDLINE', 'PubMed-not-MEDLINE',"
-            " 'Publisher', 'Completed')",
-            name="ck3_citation",
-        ),
-        sa.CheckConstraint("data_bank_list_complete_yn IN ('Y', 'N', 'y', 'n')", name="ck5_citation"),
-        sa.CheckConstraint("grant_list_complete_yn IN ('Y', 'N', 'y', 'n')", name="ck6_citation"),
-        sa.CheckConstraint(
-            "keyword_list_owner IN ('NLM', 'NASA', 'PIP', 'KIE', 'HSR', 'HMD', 'SIS', 'NOTNLM')", name="ck1_citation"
-        ),
         sa.PrimaryKeyConstraint("pmid"),
     )
     op.create_index(op.f("ix_citation_date_completed"), "citation", ["date_completed"], unique=False)
@@ -63,7 +70,8 @@ def upgrade():
         sa.Column("dtd_public_id", sa.String(length=200), nullable=True),
         sa.Column("dtd_system_id", sa.String(length=200), nullable=True),
         sa.Column("time_processed", sa.DateTime(), nullable=True),
-        sa.PrimaryKeyConstraint("id", "xml_file_name"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("xml_file_name"),
     )
     op.create_table(
         "abstract",
@@ -226,8 +234,7 @@ def upgrade():
         "keyword",
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("keyword", sa.String(length=500), nullable=False),
-        sa.Column("keyword_major_yn", sa.String(length=1), nullable=True),
-        sa.CheckConstraint("keyword_major_yn IN ('Y', 'N', 'y', 'n')", name="ck1_keyword_list"),
+        sa.Column("keyword_major_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
@@ -247,9 +254,8 @@ def upgrade():
         "mesh_heading",
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("descriptor_name", sa.String(length=500), nullable=False),
-        sa.Column("descriptor_name_major_yn", sa.String(length=1), nullable=True),
+        sa.Column("descriptor_name_major_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
         sa.Column("descriptor_ui", sa.String(length=10), nullable=True),
-        sa.CheckConstraint("descriptor_name_major_yn IN ('Y', 'N', 'y', 'n')", name="ck1_mesh_heading_list"),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
@@ -260,8 +266,11 @@ def upgrade():
         "note",
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("general_note", sa.String(length=2000), nullable=False),
-        sa.Column("general_note_owner", sa.String(length=20), nullable=True),
-        sa.CheckConstraint("general_note_owner IN ('NLM', 'NASA', 'PIP', 'KIE', 'HSR', 'HMD', 'SIS', 'NOTNLM')"),
+        sa.Column(
+            "general_note_owner",
+            sa.Enum("NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM", name="owner"),
+            nullable=True,
+        ),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
@@ -305,13 +314,8 @@ def upgrade():
         "pmid_file_mapping",
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("id_file", sa.Integer(), nullable=True),
-        sa.Column("xml_file_name", sa.String(length=50), nullable=False),
         sa.ForeignKeyConstraint(
-            ["id_file", "xml_file_name"],
-            ["xml_file.id", "xml_file.xml_file_name"],
-            name="fk3_pmids_in_file",
-            onupdate="CASCADE",
-            ondelete="CASCADE",
+            ["id_file"], ["xml_file.id"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
@@ -332,9 +336,8 @@ def upgrade():
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("descriptor_name", sa.String(length=500), nullable=False),
         sa.Column("qualifier_name", sa.String(length=500), nullable=False),
-        sa.Column("qualifier_name_major_yn", sa.String(length=1), nullable=True),
+        sa.Column("qualifier_name_major_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
         sa.Column("qualifier_ui", sa.String(length=10), nullable=True),
-        sa.CheckConstraint("qualifier_name_major_yn IN ('Y', 'N', 'y', 'n')", name="ck2_qualifier_names"),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
