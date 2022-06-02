@@ -1,6 +1,6 @@
 # -*- coding: UTF-8 -*-
 
-from sqlalchemy import CheckConstraint, Column, Date, DateTime, ForeignKey, ForeignKeyConstraint, Integer, String, Text
+from sqlalchemy import Column, Date, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import backref, relationship
 
 from pubmedpg.db.base import Base
@@ -20,40 +20,23 @@ class Citation(Base):
     date_completed = Column(Date, index=True)
     date_revised = Column(Date, index=True)
     number_of_references = Column(Integer, default=0)
-    keyword_list_owner = Column(String(30))
-    citation_owner = Column(String(30), default="NLM")
-    citation_status = Column(String(50))
+    keyword_list_owner = Column(Enum(["NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM"]))
+    citation_owner = Column(Enum(["NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM"]), default="NLM")
+    citation_status = Column(
+        Enum(["In-Data-Review", "In-Process", "MEDLINE", "OLDMEDLINE", "PubMed-not-MEDLINE", "Publisher", "Completed"])
+    )
     article_title = Column(String(4000), nullable=False)
     start_page = Column(String(10))
     end_page = Column(String(10))
     medline_pgn = Column(String(200))
     article_affiliation = Column(String(2000))
-    article_author_list_comp_yn = Column(String(1), default="Y")
-    data_bank_list_complete_yn = Column(String(1), default="Y")
-    grant_list_complete_yn = Column(String(1), default="Y")
+    article_author_list_comp_yn = Column(Enum(["Y", "N", "y", "n"]), default="Y")
+    data_bank_list_complete_yn = Column(Enum(["Y", "N", "y", "n"]), default="Y")
+    grant_list_complete_yn = Column(Enum(["Y", "N", "y", "n"]), default="Y")
     vernacular_title = Column(String(4000))
 
     def __repr__(self):
         return f"PubMed-ID: {self.pmid}\n\tArticle Title: {self.article_title.encode('utf-8')}%s\n"
-
-    __table_args__ = (
-        CheckConstraint(
-            "keyword_list_owner IN ('NLM', 'NASA', 'PIP', 'KIE', 'HSR', 'HMD', 'SIS', 'NOTNLM')",
-            name="ck1_citation",
-        ),
-        CheckConstraint(
-            "citation_owner IN ('NLM', 'NASA', 'PIP', 'KIE', 'HSR', 'HMD', 'SIS', 'NOTNLM')",
-            name="ck2_citation",
-        ),
-        CheckConstraint(
-            "citation_status IN ('In-Data-Review', 'In-Process', 'MEDLINE', 'OLDMEDLINE', 'PubMed-not-MEDLINE',"
-            " 'Publisher', 'Completed')",
-            name="ck3_citation",
-        ),
-        CheckConstraint("article_author_list_comp_yn IN ('Y', 'N', 'y', 'n')", name="ck4_citation"),
-        CheckConstraint("data_bank_list_complete_yn IN ('Y', 'N', 'y', 'n')", name="ck5_citation"),
-        CheckConstraint("grant_list_complete_yn IN ('Y', 'N', 'y', 'n')", name="ck6_citation"),
-    )
 
 
 class PmidFileMapping(Base):
@@ -61,26 +44,17 @@ class PmidFileMapping(Base):
         ForeignKey("citation.pmid", deferrable=True, initially="DEFERRED", ondelete="CASCADE", onupdate="CASCADE"),
         primary_key=True,
     )
-    id_file = Column(Integer)
-    xml_file_name = Column(String(50), nullable=False)
+    id_file = Column(
+        ForeignKey("xml_file.id", deferrable=True, initially="DEFERRED", ondelete="CASCADE", onupdate="CASCADE"),
+    )
 
     def __repr__(self):
-        return f"PmidFileMapping({self.pmid}, {self.id_file}, {self.xml_file_name})"
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["id_file", "xml_file_name"],
-            ["xml_file.id", "xml_file.xml_file_name"],
-            onupdate="CASCADE",
-            ondelete="CASCADE",
-            name="fk3_pmids_in_file",
-        ),
-    )
+        return f"PmidFileMapping({self.pmid}, {self.id_file})"
 
 
 class XmlFile(Base):
     id = Column(Integer, nullable=False, autoincrement=True, primary_key=True)
-    xml_file_name = Column(String(50), nullable=False, primary_key=True)
+    xml_file_name = Column(String(50), nullable=False, unique=True)
     doc_type_name = Column(String(100))
     dtd_public_id = Column(String(200))  # ,   nullable=False)
     dtd_system_id = Column(String(200))  # ,   nullable=False)
@@ -230,15 +204,11 @@ class MeshHeading(Base):
         primary_key=True,
     )
     descriptor_name = Column(String(500), primary_key=True)
-    descriptor_name_major_yn = Column(String(1), default="N")
+    descriptor_name_major_yn = Column(Enum(["Y", "N", "y", "n"]), default="N")
     descriptor_ui = Column(String(10), index=True)
 
     def __repr__(self):
         return f"MeshHeading ({self.descriptor_name}, {self.descriptor_name_major_yn})"
-
-    __table_args__ = (
-        CheckConstraint("descriptor_name_major_yn IN ('Y', 'N', 'y', 'n')", name="ck1_mesh_heading_list"),
-    )
 
     citation = relationship(
         Citation, backref=backref("meshheadings", order_by=descriptor_name, cascade="all, delete-orphan")
@@ -252,13 +222,11 @@ class Qualifier(Base):
     )
     descriptor_name = Column(String(500), index=True, primary_key=True)
     qualifier_name = Column(String(500), index=True, primary_key=True)
-    qualifier_name_major_yn = Column(String(1), default="N")
+    qualifier_name_major_yn = Column(Enum(["Y", "N", "y", "n"]), default="N")
     qualifier_ui = Column(String(10), index=True)
 
     def __repr__(self):
         return f"Qualifier ({self.descriptor_name}, {self.qualifier_name}, {self.qualifier_name_major_yn})"
-
-    __table_args__ = (CheckConstraint("qualifier_name_major_yn IN ('Y', 'N', 'y', 'n')", name="ck2_qualifier_names"),)
 
     citation = relationship(
         Citation, backref=backref("qualifiers", order_by=qualifier_name, cascade="all, delete-orphan")
@@ -322,12 +290,10 @@ class Keyword(Base):
         primary_key=True,
     )
     keyword = Column(String(500), nullable=False, index=True, primary_key=True)
-    keyword_major_yn = Column(String(1), default="N")
+    keyword_major_yn = Column(Enum(["Y", "N", "y", "n"]), default="N")
 
     def __repr__(self):
         return f"Keyword ({self.keyword}, {self.keyword_major_yn})"
-
-    __table_args__ = (CheckConstraint("keyword_major_yn IN ('Y', 'N', 'y', 'n')", name="ck1_keyword_list"),)
 
     citation = relationship(Citation, backref=backref("keywords", order_by=keyword, cascade="all, delete-orphan"))
 
@@ -379,14 +345,10 @@ class Note(Base):
         primary_key=True,
     )
     general_note = Column(String(2000), nullable=False, primary_key=True)
-    general_note_owner = Column(String(20))
+    general_note_owner = Column(Enum(["NLM", "NASA", "PIP", "KIE", "HSR", "HMD", "SIS", "NOTNLM"]))
 
     def __repr__(self):
         return f"Keyword ({self.general_note}, {self.general_note_owner})"
-
-    __table_args__ = (
-        CheckConstraint("general_note_owner IN ('NLM', 'NASA', 'PIP', 'KIE', 'HSR', 'HMD', 'SIS', 'NOTNLM')"),
-    )
 
     citation = relationship(Citation, backref=backref("notes", order_by=pmid, cascade="all, delete-orphan"))
 

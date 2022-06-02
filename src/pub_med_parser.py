@@ -7,10 +7,14 @@ import warnings
 import xml.etree.cElementTree as etree
 from multiprocessing import Pool
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
+from pubmedpg.core.config import settings
 from pubmedpg.db.base import Base
-from pubmedpg.db.session import get_session, sync_engine, sync_session
+
+# from pubmedpg.db.session import sync_engine, sync_session
 from pubmedpg.models.pubmed import (
     Abstract,
     Accession,
@@ -39,10 +43,13 @@ from pubmedpg.models.pubmed import (
     XmlFile,
 )
 
+sync_engine = create_engine(settings.SQLALCHEMY_DATABASE_URI)
+# a sessionmaker(), also in the same scope as the engine
+sync_session = Session(sync_engine)
+
+
 WARNING_LEVEL = "always"  # error, ignore, always, default, module, once
 # multiple processes, #processors-1 is optimal!
-PROCESSES = 4
-
 warnings.simplefilter(WARNING_LEVEL)
 
 # convert 3 letter code of months to digits for unique publication format
@@ -62,111 +69,141 @@ month_code = {
 }
 
 
+def es(xml_node, length, default=None):
+    if xml_node is None or xml_node.text is None:
+        return default
+    else:
+        stripped = xml_node.text.strip()
+        return stripped[: length - 3] + "..." if len(stripped) > length else stripped
+
+
+def init_person(person_node, person):
+    person.last_name = es(person_node.find("LastName"), 300)
+    person.fore_name = es(person_node.find("ForeName"), 100)
+    person.initials = es(person_node.find("Initials"), 10)
+    person.suffix = es(person_node.find("Suffix"), 20)
+    return person
+
+
 class MedlineParser:
-    # db is a global variable and given to MedlineParser(path,db) in _start_parser(path)
     def __init__(self, filepath):
         self.filepath = filepath
 
-    async def _parse(self, check_existing):
-        _file = self.filepath
-
-        """
-        a = self.session.query(PubMedDB.XMLFile.xml_file_name).filter_by(xml_file_name = os.path.split(self.filepath)[-1])
-        if a.all():
-            print self.filepath, 'already in DB'
+    def parse(self, existing_pmids: set[int]):
+        logfile = os.path.join(os.path.dirname(self.filepath), "processed_xmls.txt")
+        if os.path.exists(logfile):
+            with open(logfile, "r") as f:
+                processed_xmls = set(f.read().splitlines())
+        else:
+            processed_xmls = set()
+        if self.filepath in processed_xmls:
+            print(f"Processing file: {self.filepath} already processed")
             return True
-        """
 
-        print("Parsing file:", _file)
+        engine = create_engine(settings.SQLALCHEMY_DATABASE_URI)
+        with Session(engine) as db:
+            """
+            a = self.session.query(XmlFile.xml_file_name).filter_by(xml_file_name = os.path.split(self.filepath)[-1])
+            if a.all():
+                print self.filepath, 'already in DB'
+                return True
+            """
+            _file = self.filepath
+            if os.path.splitext(self.filepath)[-1] == ".gz":
+                _file = gzip.open(_file, "rb")
 
-        if os.path.splitext(_file)[-1] == ".gz":
-            _file = gzip.open(_file, "rb")
+            # get an iterable
+            context = etree.iterparse(_file, events=("start", "end"))
+            # turn it into an iterator
+            context = iter(context)
 
-        # get an iterable
-        context = etree.iterparse(_file, events=("start", "end"))
-        # turn it into an iterator
-        context = iter(context)
+            # get the root element
+            event, root = next(context)
 
-        # get the root element
-        event, root = next(context)
+            db_citation = Citation()
+            db_journal = Journal()
 
-        DBCitation = Citation()
-        DBJournal = Journal()
+            db_xml_file = XmlFile()
+            db_xml_file.xml_file_name = os.path.split(self.filepath)[-1]
+            db_xml_file.time_processed = datetime.datetime.now()  # time.localtime()
 
-        DBXMLFile = XmlFile()
-        DBXMLFile.xml_file_name = os.path.split(self.filepath)[-1]
-        DBXMLFile.time_processed = datetime.datetime.now()  # time.localtime()
+            loop_counter = 0  # to check for memory usage each X loops
+            already_found = 0
 
-        loop_counter = 0  # to check for memory usage each X loops
-        async with get_session() as db:
             for event, elem in context:
                 if event == "end":
                     if elem.tag == "MedlineCitation" or elem.tag == "BookDocument":
                         loop_counter += 1
-                        # catch KeyError in case there is no Owner or Status attribute before committing DBCitation
+                        # catch KeyError in case there is no Owner or Status attribute before committing db_citation
                         try:
-                            DBCitation.citation_owner = elem.attrib["Owner"]
+                            db_citation.citation_owner = elem.attrib["Owner"]
                         except Exception:
                             pass
                         try:
-                            DBCitation.citation_status = elem.attrib["Status"]
+                            db_citation.citation_status = elem.attrib["Status"]
                         except Exception:
                             pass
-                        DBCitation.journals = [DBJournal]
+                        db_citation.journals = [db_journal]
 
                         pubmed_id = int(elem.find("PMID").text)
-                        DBCitation.pmid = pubmed_id
+                        db_citation.pmid = pubmed_id
 
-                        # try:
-                        same_pmid = None
-                        if check_existing:
-                            result = await db.execute(select(Citation).where(Citation.pmid == pubmed_id))
-                            same_pmid = result.scalars().all()
+                        try:
+                            # same_pmid = None
+                            if pubmed_id in existing_pmids:
+                                already_found += 1
+                                db_citation = Citation()
+                                db_journal = Journal()
+                                elem.clear()
+                                continue
 
-                        # The following condition is only for incremental updates.
-                        """
-                        # Implementation that replaces the database entry with the new article from the XML file.
-                        if same_pmid: # -> evt. any()
-                            same_pmid = same_pmid[0]
-                            warnings.warn('\nDoubled Citation found (%s).' % pubmed_id)
-                            if not same_pmid.date_revised or same_pmid.date_revised < DBCitation.date_revised:
-                                warnings.warn('\nReplace old Citation. Old Citation from %s, new citation from %s.' % (same_pmid.date_revised, DBCitation.date_revised) )
-                                self.session.delete( same_pmid )
-                                self.session.commit()
-                                DBCitation.xml_files = [DBXMLFile] # adds an implicit add()
-                                self.session.add( DBCitation )
-                        """
+                            # result = await db.execute(select(Citation).where(Citation.pmid == pubmed_id))
+                            # same_pmid = result.scalars().all()
 
-                        # Keep database entry that is already saved in database and continue with the next PubMed-ID.
-                        # Manually deleting entries is possible (with PGAdmin3 or via command-line), e.g.:
-                        # DELETE FROM pubmed.tbl_medline_citation WHERE pmid = 25005691;
-                        if same_pmid:
-                            print(
-                                "Article already in database - " + str(same_pmid[0]) + "Continuing with next PubMed-ID"
-                            )
-                            DBCitation = Citation()
-                            DBJournal = Journal()
-                            elem.clear()
-                            await db.commit()
-                            continue
-                        else:
-                            DBCitation.xml_files = [DBXMLFile]  # adds an implicit add()
-                            db.add(DBCitation)
+                            # The following condition is only for incremental updates.
+                            """
+                            # Implementation that replaces the database entry with the new article from the XML file.
+                            if same_pmid: # -> evt. any()
+                                same_pmid = same_pmid[0]
+                                warnings.warn('\nDoubled Citation found (%s).' % pubmed_id)
+                                if not same_pmid.date_revised or same_pmid.date_revised < db_citation.date_revised:
+                                    warnings.warn('\nReplace old Citation. Old Citation from %s, new citation from %s.' % (same_pmid.date_revised, db_citation.date_revised) )
+                                    self.session.delete( same_pmid )
+                                    self.session.commit()
+                                    db_citation.xml_files = [db_xml_file] # adds an implicit add()
+                                    self.session.add( db_citation )
+                            """
 
-                        if loop_counter % 5000 == 0:
-                            print("Committing on:", _file)
-                            await db.commit()
+                            # Keep database entry that is already saved in database and continue with the next PubMed-ID.
+                            # Manually deleting entries is possible (with PGAdmin3 or via command-line), e.g.:
+                            # DELETE FROM pubmed.tbl_medline_citation WHERE pmid = 25005691;
+                            # if same_pmid:
+                            #     print(
+                            #         "Article already in database - " + str(same_pmid[0]) + "Continuing with next PubMed-ID"
+                            #     )
+                            #     db_citation = Citation()
+                            #     db_journal = Journal()
+                            #     elem.clear()
+                            #     await db.commit()
+                            #     continue
+                            # else:
+                            db_citation.xml_files = [db_xml_file]  # adds an implicit add()
+                            db.add(db_citation)
 
-                        # except IntegrityError as error:
-                        #     warnings.warn("\nIntegrityError: " + str(error), Warning)
-                        #     await db.rollback()
-                        # except Exception as e:
-                        #     warnings.warn("\nUnknown error:" + str(e), Warning)
-                        #     await db.rollback()
-                        #     raise
+                            if loop_counter % 2000 == 0:
+                                print(f"Committing on: {db_xml_file.xml_file_name}, {already_found=}, {loop_counter=}")
+                                db.commit()
 
-                        DBCitation = Citation()
-                        DBJournal = Journal()
+                        except IntegrityError as error:
+                            warnings.warn(f"\nFile: {db_xml_file.xml_file_name}\nIntegrityError: {error}", Warning)
+                            db.rollback()
+                        except Exception as e:
+                            warnings.warn(f"\nFile: {db_xml_file.xml_file_name}\nUnknown error: {e}", Warning)
+                            db.rollback()
+                            raise
+
+                        db_citation = Citation()
+                        db_journal = Journal()
                         elem.clear()
 
                     # Kersten: some dates are given in 3-letter code - use dictionary month_code for conversion to digits:
@@ -181,7 +218,7 @@ class MedlineParser:
                                 int(month_code[elem.find("Month").text]),
                                 int(elem.find("Day").text),
                             )
-                        DBCitation.date_created = date
+                        db_citation.date_created = date
 
                     if elem.tag == "DateCompleted":
                         try:
@@ -194,7 +231,7 @@ class MedlineParser:
                                 int(month_code[elem.find("Month").text]),
                                 int(elem.find("Day").text),
                             )
-                        DBCitation.date_completed = date
+                        db_citation.date_completed = date
 
                     if elem.tag == "DateRevised":
                         try:
@@ -207,61 +244,54 @@ class MedlineParser:
                                 int(month_code[elem.find("Month").text]),
                                 int(elem.find("Day").text),
                             )
-                        DBCitation.date_revised = date
+                        db_citation.date_revised = date
 
                     if elem.tag == "NumberOfReferences":
-                        DBCitation.number_of_references = int(elem.text) if elem.text else 0
+                        db_citation.number_of_references = int(elem.text) if elem.text else 0
 
                     if elem.tag == "ISSN":
-                        DBJournal.issn = elem.text
-                        DBJournal.issn_type = elem.attrib["IssnType"]
+                        db_journal.issn = elem.text
+                        db_journal.issn_type = elem.attrib["IssnType"]
 
                     if elem.tag == "JournalIssue" or elem.tag == "Book":
                         if elem.find("Volume") is not None:
-                            DBJournal.volume = elem.find("Volume").text
+                            db_journal.volume = elem.find("Volume").text
                         if elem.find("Issue") is not None:
-                            DBJournal.issue = elem.find("Issue").text
+                            db_journal.issue = elem.find("Issue").text
 
                         # ensure pub_date_year with boolean year:
                         year = False
                         for subelem in elem.find("PubDate"):
                             if subelem.tag == "MedlineDate":
-                                if len(subelem.text) > 40:
-                                    DBJournal.medline_date = subelem.text[:37] + "..."
-                                else:
-                                    DBJournal.medline_date = subelem.text
+                                db_journal.medline_date = es(subelem, 40)
                             elif subelem.tag == "Year":
                                 year = True
-                                DBJournal.pub_date_year = int(subelem.text) if subelem.text else None
+                                db_journal.pub_date_year = int(subelem.text) if subelem.text else None
                             elif subelem.tag == "Month":
                                 if subelem.text in month_code:
-                                    DBJournal.pub_date_month = month_code[subelem.text]
+                                    db_journal.pub_date_month = month_code[subelem.text]
                                 else:
-                                    DBJournal.pub_date_month = subelem.text
+                                    db_journal.pub_date_month = subelem.text
                             elif subelem.tag == "Day":
-                                DBJournal.pub_date_day = subelem.text
+                                db_journal.pub_date_day = subelem.text
                         # try to cast year from beginning of MedlineDate string
                         if not year:
                             try:
-                                temp_year = int(subelem.text[0:4])
-                                DBJournal.pub_date_year = temp_year
-                                year = True
+                                db_journal.pub_date_year = int(subelem.text[0:4])
                             except Exception:
-                                print(_file, " not able to cast first 4 letters of medline_date", subelem.text)
-                        # try to cast year from end of MedlineDate string
-                        if not year:
-                            try:
-                                temp_year = int(subelem.text[-4:])
-                                DBJournal.pub_date_year = temp_year
-                                year = True
-                            except Exception:
-                                print(_file, " not able to cast last 4 letters of medline_date", subelem.text)
-
+                                try:
+                                    db_journal.pub_date_year = int(subelem.text[-4:])
+                                except Exception:
+                                    print(
+                                        f"Unable to get year for {pubmed_id=}: {db_xml_file.xml_file_name=},"
+                                        f" {subelem.text=}"
+                                    )
+                                    pass
                     # if there is the attribute ArticleDate, month and day are given
                     if elem.tag == "ArticleDate":
-                        DBJournal.pub_date_year = elem.find("Year").text
-                        DBJournal.pub_date_month = elem.find("Month").text
-                        DBJournal.pub_date_day = elem.find("Day").text
+                        db_journal.pub_date_year = elem.find("Year").text
+                        db_journal.pub_date_month = elem.find("Month").text
+                        db_journal.pub_date_day = elem.find("Day").text
 
                     if elem.tag == "Title":
                         """ToDo"""
@@ -269,251 +299,161 @@ class MedlineParser:
 
                     if elem.tag == "Journal":
                         if elem.find("Title") is not None:
-                            DBJournal.title = elem.find("Title").text
+                            db_journal.title = elem.find("Title").text
                         if elem.find("ISOAbbreviation") is not None:
-                            DBJournal.iso_abbreviation = elem.find("ISOAbbreviation").text
+                            db_journal.iso_abbreviation = elem.find("ISOAbbreviation").text
 
                     if elem.tag == "ArticleTitle" or elem.tag == "BookTitle":
                         if elem.text is not None:
-                            DBCitation.article_title = elem.text
+                            db_citation.article_title = elem.text
                         # add string because of not null constraint
                         else:
-                            DBCitation.article_title = "No title"
+                            db_citation.article_title = "No title"
                     if elem.tag == "MedlinePgn":
-                        DBCitation.medline_pgn = elem.text
+                        db_citation.medline_pgn = elem.text
 
                     if elem.tag == "AuthorList":
-                        # catch KeyError in case there is no CompleteYN attribute before committing DBCitation
+                        # catch KeyError in case there is no CompleteYN attribute before committing db_citation
                         try:
-                            DBCitation.article_author_list_comp_yn = elem.attrib["CompleteYN"]
+                            db_citation.article_author_list_comp_yn = elem.attrib["CompleteYN"]
                         except Exception:
                             pass
 
-                        DBCitation.authors = []
+                        db_citation.authors = []
                         for author in elem:
-                            DBAuthor = Author()
-
-                            if author.find("LastName") is not None:
-                                DBAuthor.last_name = author.find("LastName").text
-
-                            # Forname is restricted to 100 characters
-                            if author.find("ForeName") is not None and author.find("ForeName").text is not None:
-                                temp_forname = author.find("ForeName").text
-                                if len(temp_forname) < 100:
-                                    DBAuthor.fore_name = temp_forname
-                                else:
-                                    DBAuthor.fore_name = temp_forname[0:97] + "..."
-
-                            if author.find("Initials") is not None:
-                                temp_initials = author.find("Initials").text
-                                if len(temp_initials) < 10:
-                                    DBAuthor.initials = temp_initials
-                                else:
-                                    DBAuthor.initials = temp_initials[0:7] + "..."
-
-                            # Suffix is restricted to 20 characters
-                            if author.find("Suffix") is not None and author.find("Suffix").text is not None:
-                                temp_suffix = author.find("Suffix").text
-                                if len(temp_suffix) < 20:
-                                    DBAuthor.suffix = temp_suffix
-                                else:
-                                    DBAuthor.suffix = temp_suffix[0:17] + "..."
-
+                            db_author = init_person(author, Author())
                             if author.find("CollectiveName") is not None:
-                                DBAuthor.collective_name = author.find("CollectiveName").text
+                                db_author.collective_name = author.find("CollectiveName").text
 
-                            DBCitation.authors.append(DBAuthor)
+                            db_citation.authors.append(db_author)
 
                     if elem.tag == "PersonalNameSubjectList":
-                        DBCitation.personal_names = []
+                        db_citation.personal_names = []
                         for pname in elem:
-                            DBPersonalName = PersonalName()
-
-                            if pname.find("LastName") is not None:
-                                DBPersonalName.last_name = pname.find("LastName").text
-                            if pname.find("ForeName") is not None:
-                                DBPersonalName.fore_name = pname.find("ForeName").text
-                            if pname.find("Initials") is not None:
-                                DBPersonalName.initials = pname.find("Initials").text
-                            if pname.find("Suffix") is not None:
-                                DBPersonalName.suffix = pname.find("Suffix").text
-
-                            DBCitation.personal_names.append(DBPersonalName)
+                            db_citation.personal_names.append(init_person(pname, PersonalName()))
 
                     if elem.tag == "InvestigatorList":
-                        DBCitation.investigators = []
+                        db_citation.investigators = []
                         for investigator in elem:
-                            DBInvestigator = Investigator()
-
-                            if investigator.find("LastName") is not None:
-                                DBInvestigator.last_name = investigator.find("LastName").text
-
-                            if investigator.find("ForeName") is not None:
-                                DBInvestigator.fore_name = investigator.find("ForeName").text
-
-                            if investigator.find("Initials") is not None:
-                                DBInvestigator.initials = investigator.find("Initials").text
-
-                            if investigator.find("Suffix") is not None:
-                                temp_suffix = investigator.find("Suffix").text
-                                # suffix is restricted to 20 characters
-                                if len(temp_suffix) < 20:
-                                    DBInvestigator.suffix = temp_suffix
-                                else:
-                                    DBInvestigator.suffix = temp_suffix[:17] + "..."
-
+                            db_investigator = init_person(investigator, Investigator())
                             if investigator.find("Affiliation") is not None:
-                                DBInvestigator.investigator_affiliation = investigator.find("Affiliation").text
+                                db_investigator.investigator_affiliation = investigator.find("Affiliation").text
 
-                            DBCitation.investigators.append(DBInvestigator)
+                            db_citation.investigators.append(db_investigator)
 
                     if elem.tag == "SpaceFlightMission":
-                        DBSpaceFlight = SpaceFlight()
-                        DBSpaceFlight.space_flight_mission = elem.text
-                        DBCitation.space_flights = [DBSpaceFlight]
+                        db_space_flight = SpaceFlight()
+                        db_space_flight.space_flight_mission = elem.text
+                        db_citation.space_flights = [db_space_flight]
 
                     if elem.tag == "GeneralNote":
-                        DBCitation.notes = []
+                        db_citation.notes = []
                         for subelem in elem:
-                            DBNote = Note()
-                            DBNote.general_note_owner = elem.attrib["Owner"]
-                            DBNote.general_note = subelem.text
-                            DBCitation.notes.append(DBNote)
+                            db_note = Note()
+                            db_note.general_note_owner = elem.attrib["Owner"]
+                            db_note.general_note = subelem.text
+                            db_citation.notes.append(db_note)
 
                     if elem.tag == "ChemicalList":
-                        DBCitation.chemicals = []
+                        db_citation.chemicals = []
                         for chemical in elem:
-                            DBChemical = Chemical()
+                            db_chemical = Chemical()
 
                             if chemical.find("RegistryNumber") is not None:
-                                DBChemical.registry_number = chemical.find("RegistryNumber").text
+                                db_chemical.registry_number = chemical.find("RegistryNumber").text
                             if chemical.find("NameOfSubstance") is not None:
-                                DBChemical.name_of_substance = chemical.find("NameOfSubstance").text
-                                DBChemical.substance_ui = chemical.find("NameOfSubstance").attrib["UI"]
-                            DBCitation.chemicals.append(DBChemical)
+                                db_chemical.name_of_substance = chemical.find("NameOfSubstance").text
+                                db_chemical.substance_ui = chemical.find("NameOfSubstance").attrib["UI"]
+                            db_citation.chemicals.append(db_chemical)
 
                     if elem.tag == "GeneSymbolList":
-                        DBCitation.gene_symbols = []
+                        db_citation.gene_symbols = []
                         for genes in elem:
-                            DBGeneSymbol = GeneSymbol()
-                            if len(genes.text) < 40:
-                                DBGeneSymbol.gene_symbol = genes.text
-                            else:
-                                DBGeneSymbol.gene_symbol = genes.text[:37] + "..."
-                            DBCitation.gene_symbols.append(DBGeneSymbol)
+                            db_gene_symbol = GeneSymbol()
+                            db_gene_symbol.gene_symbol = genes.text[:37] + "..." if len(genes.text) > 40 else genes.text
+                            db_citation.gene_symbols.append(db_gene_symbol)
 
                     if elem.tag == "CommentsCorrectionsList":
-
-                        DBCitation.comments = []
+                        db_citation.comments = []
                         for comment in elem:
-                            DBComment = Comment()
-                            comment_ref_type = comment.attrib["RefType"]
-                            comment_ref_source = comment.find("RefSource")
-
-                            if comment_ref_source is not None and comment_ref_source.text is not None:
-                                if len(comment_ref_source.text) < 255:
-                                    DBComment.ref_source = comment_ref_source.text
+                            db_comment = Comment()
+                            db_comment.ref_source = es(comment.find("RefSource"), 255, "No reference source")
+                            if comment.attrib["RefType"] is not None:
+                                if len(comment.attrib["RefType"]) > 21:
+                                    db_comment.ref_type = comment.attrib["RefType"][:18] + "..."
                                 else:
-                                    DBComment.ref_source = comment_ref_source.text[0:251] + "..."
-                            # add string because of not null constraint
-                            else:
-                                DBComment.ref_source = "No reference source"
+                                    db_comment.ref_type = comment.attrib["RefType"]
 
-                            if comment_ref_type is not None:
-                                if len(comment_ref_type) < 22:
-                                    DBComment.ref_type = comment_ref_type
-                                else:
-                                    DBComment.ref_type = comment_ref_type[0:18] + "..."
                             comment_pmid_version = comment.find("PMID")
-
                             if comment_pmid_version is not None:
-                                DBComment.pmid_version = int(comment_pmid_version.text)
-                            DBCitation.comments.append(DBComment)
+                                db_comment.pmid_version = int(comment_pmid_version.text)
+                            db_citation.comments.append(db_comment)
 
                     if elem.tag == "MedlineJournalInfo":
-                        DBJournalInfo = JournalInfo()
+                        db_journal_info = JournalInfo()
                         if elem.find("NlmUniqueID") is not None:
-                            DBJournalInfo.nlm_unique_id = elem.find("NlmUniqueID").text
+                            db_journal_info.nlm_unique_id = elem.find("NlmUniqueID").text
                         if elem.find("Country") is not None:
-                            DBJournalInfo.country = elem.find("Country").text
+                            db_journal_info.country = elem.find("Country").text
                         """#MedlineTA is just a name for the journal as an abbreviation
                         Abstract with PubMed-ID 21625393 has no MedlineTA attributebut it has to be set in PostgreSQL, that is why "unknown" is inserted instead. There is just a <MedlineTA/> tag and the same information is given in  </JournalIssue> <Title>Biotechnology and bioprocess engineering : BBE</Title>, but this is not (yet) read in this parser -> line 173:
                         """
                         if elem.find("MedlineTA") is not None and elem.find("MedlineTA").text is None:
-                            DBJournalInfo.medline_ta = "unknown"
+                            db_journal_info.medline_ta = "unknown"
                         elif elem.find("MedlineTA") is not None:
-                            DBJournalInfo.medline_ta = elem.find("MedlineTA").text
-                        DBCitation.journal_infos = [DBJournalInfo]
+                            db_journal_info.medline_ta = elem.find("MedlineTA").text
+                        db_citation.journal_infos = [db_journal_info]
 
                     if elem.tag == "CitationSubset":
-                        DBCitation.citation_subsets = []
+                        db_citation.citation_subsets = []
                         for subelem in elem:
-                            DBCitationSubset = CitationSubset(subelem.text)
-                            DBCitation.citation_subsets.append(DBCitationSubset)
+                            db_citation_subset = CitationSubset(subelem.text)
+                            db_citation.citation_subsets.append(db_citation_subset)
 
                     if elem.tag == "MeshHeadingList":
-                        DBCitation.meshheadings = []
-                        DBCitation.qualifiers = []
+                        db_citation.meshheadings = []
+                        db_citation.qualifiers = []
                         for mesh in elem:
-                            DBMeSHHeading = MeshHeading()
+                            db_mesh_heading = MeshHeading()
                             mesh_desc = mesh.find("DescriptorName")
                             if mesh_desc is not None:
-                                DBMeSHHeading.descriptor_name = mesh_desc.text
-                                DBMeSHHeading.descriptor_name_major_yn = mesh_desc.attrib["MajorTopicYN"]
-                                DBMeSHHeading.descriptor_ui = mesh_desc.attrib["UI"]
+                                db_mesh_heading.descriptor_name = mesh_desc.text
+                                db_mesh_heading.descriptor_name_major_yn = mesh_desc.attrib["MajorTopicYN"]
+                                db_mesh_heading.descriptor_ui = mesh_desc.attrib["UI"]
                             if mesh.find("QualifierName") is not None:
                                 mesh_quals = mesh.findall("QualifierName")
                                 for qual in mesh_quals:
-                                    DBQualifier = Qualifier()
-                                    DBQualifier.descriptor_name = mesh_desc.text
-                                    DBQualifier.qualifier_name = qual.text
-                                    DBQualifier.qualifier_name_major_yn = qual.attrib["MajorTopicYN"]
-                                    DBQualifier.qualifier_ui = qual.attrib["UI"]
-                                    DBCitation.qualifiers.append(DBQualifier)
-                            DBCitation.meshheadings.append(DBMeSHHeading)
+                                    db_qualifier = Qualifier()
+                                    db_qualifier.descriptor_name = mesh_desc.text
+                                    db_qualifier.qualifier_name = qual.text
+                                    db_qualifier.qualifier_name_major_yn = qual.attrib["MajorTopicYN"]
+                                    db_qualifier.qualifier_ui = qual.attrib["UI"]
+                                    db_citation.qualifiers.append(db_qualifier)
+                            db_citation.meshheadings.append(db_mesh_heading)
 
                     if elem.tag == "GrantList":
-                        # catch KeyError in case there is no CompleteYN attribute before committing DBCitation
+                        # catch KeyError in case there is no CompleteYN attribute before committing db_citation
                         try:
-                            DBCitation.grant_list_complete_yn = elem.attrib["CompleteYN"]
+                            db_citation.grant_list_complete_yn = elem.attrib["CompleteYN"]
                         except Exception:
                             pass
-                        DBCitation.grants = []
+                        db_citation.grants = []
                         for grant in elem:
-                            DBGrants = Grant()
-
-                            # grantid is restricted to 200 characters
-                            if grant.find("GrantID") is not None and grant.find("GrantID").text is not None:
-                                temp_grantid = grant.find("GrantID").text
-                                if len(temp_grantid) < 200:
-                                    DBGrants.grantid = temp_grantid
-                                else:
-                                    DBGrants.grantid = temp_grantid[0:197] + "..."
-
-                            if grant.find("Acronym") is not None:
-                                DBGrants.acronym = grant.find("Acronym").text
-
-                            # agency is restricted to 200 characters
-                            if grant.find("Agency") is not None and grant.find("Agency").text is not None:
-                                temp_agency = grant.find("Agency").text
-                                if len(temp_agency) < 200:
-                                    DBGrants.agency = temp_agency
-                                else:
-                                    DBGrants.agency = temp_agency[0:197] + "..."
-
-                            if grant.find("Country") is not None:
-                                DBGrants.country = grant.find("Country").text
-
-                            DBCitation.grants.append(DBGrants)
+                            db_grants = Grant()
+                            db_grants.grantid = es(grant.find("GrantID"), 200)
+                            db_grants.acronym = es(grant.find("Acronym"), 20)
+                            db_grants.agency = es(grant.find("Agency"), 200)
+                            db_grants.country = es(grant.find("Country"), 200)
+                            db_citation.grants.append(db_grants)
 
                     if elem.tag == "DataBankList":
-                        # catch KeyError in case there is no CompleteYN attribute before committing DBCitation
+                        # catch KeyError in case there is no CompleteYN attribute before committing db_citation
                         try:
-                            DBCitation.data_bank_list_complete_yn = elem.attrib["CompleteYN"]
+                            db_citation.data_bank_list_complete_yn = elem.attrib["CompleteYN"]
                         except Exception:
                             pass
-                        DBCitation.accessions = []
-                        DBCitation.databanks = []
+                        db_citation.accessions = []
+                        db_citation.databanks = []
 
                         all_databanks = []
                         all_acc_numbers = {}
@@ -522,9 +462,9 @@ class MedlineParser:
                             temp_name = databank.find("DataBankName").text
                             # check unique data_bank_name per PubMed ID and not null
                             if temp_name is not None and temp_name not in all_databanks:
-                                DBDataBank = DataBank()
-                                DBDataBank.data_bank_name = temp_name
-                                DBCitation.databanks.append(DBDataBank)
+                                db_data_bank = DataBank()
+                                db_data_bank.data_bank_name = temp_name
+                                db_citation.databanks.append(db_data_bank)
                                 all_databanks.append(temp_name)
                                 all_acc_numbers[temp_name] = []
 
@@ -534,26 +474,26 @@ class MedlineParser:
                                 for acc_number in acc_numbers:
                                     # check unique accession number per PubMed ID and data_bank_name
                                     if acc_number.text not in all_acc_numbers[temp_name]:
-                                        DBAccession = Accession()
-                                        DBAccession.data_bank_name = DBDataBank.data_bank_name
-                                        DBAccession.accession_number = acc_number.text
-                                        DBCitation.accessions.append(DBAccession)
+                                        db_accession = Accession()
+                                        db_accession.data_bank_name = db_data_bank.data_bank_name
+                                        db_accession.accession_number = acc_number.text
+                                        db_citation.accessions.append(db_accession)
                                         all_acc_numbers[temp_name].append(acc_number.text)
 
                     if elem.tag == "Language":
-                        DBLanguage = Language()
-                        DBLanguage.language = elem.text
-                        DBCitation.languages = [DBLanguage]
+                        db_language = Language()
+                        db_language.language = elem.text
+                        db_citation.languages = [db_language]
 
                     if elem.tag == "PublicationTypeList":
-                        DBCitation.publication_types = []
+                        db_citation.publication_types = []
                         all_publication_types = []
                         for subelem in elem:
                             # check for unique elements in PublicationTypeList
                             if subelem.text not in all_publication_types:
-                                DBPublicationType = PublicationType()
-                                DBPublicationType.publication_type = subelem.text
-                                DBCitation.publication_types.append(DBPublicationType)
+                                db_publication_type = PublicationType()
+                                db_publication_type.publication_type = subelem.text
+                                db_citation.publication_types.append(db_publication_type)
                                 all_publication_types.append(subelem.text)
 
                     if elem.tag == "Article":
@@ -574,32 +514,29 @@ class MedlineParser:
                         """
 
                     if elem.tag == "VernacularTitle":
-                        DBCitation.vernacular_title = elem.tag
+                        db_citation.vernacular_title = elem.tag
 
                     if elem.tag == "OtherAbstract":
-                        DBOtherAbstract = OtherAbstract()
-                        DBCitation.other_abstracts = []
+                        db_other_abstract = OtherAbstract()
+                        db_citation.other_abstracts = []
                         for other in elem:
                             if other.tag == "AbstractText":
-                                DBOtherAbstract.other_abstract = other.text
-                        DBCitation.other_abstracts.append(DBOtherAbstract)
+                                db_other_abstract.other_abstract = other.text
+                        db_citation.other_abstracts.append(db_other_abstract)
 
                     if elem.tag == "OtherID":
-                        DBCitation.other_ids = []
-                        DBOtherID = OtherId()
-                        if len(elem.text) < 80:
-                            DBOtherID.other_id = elem.text
-                        else:
-                            DBOtherID.other_id = elem.text[0:77] + "..."
-                        DBOtherID.other_id_source = elem.attrib["Source"]
-                        DBCitation.other_ids.append(DBOtherID)
+                        db_citation.other_ids = []
+                        db_other_id = OtherId()
+                        db_other_id.other_id = es(elem, 80)
+                        db_other_id.other_id_source = elem.attrib["Source"]
+                        db_citation.other_ids.append(db_other_id)
 
                     # start Kersten: some abstracts contain another structure - code changed:
                     # check for different labels: "OBJECTIVE", "CASE SUMMARY", ...
                     # next 3 lines are unchanged
                     if elem.tag == "Abstract":
-                        DBAbstract = Abstract()
-                        DBCitation.abstracts = []
+                        db_abstract = Abstract()
+                        db_citation.abstracts = []
                         # prepare empty string for "normal" abstracts or "labelled" abstracts
                         temp_abstract_text = ""
                         # if there are multiple AbstractText-Tags:
@@ -639,30 +576,30 @@ class MedlineParser:
                         if elem.find("AbstractText") is not None and len(elem.findall("AbstractText")) == 1:
                             temp_abstract_text = elem.findtext("AbstractText")
                         # append abstract text for later pushing it into db:
-                        DBAbstract.abstract_text = temp_abstract_text
+                        db_abstract.abstract_text = temp_abstract_text
                         # next 3 lines are unchanged - some abstract texts (few) contain the child-tag "CopyrightInformation" after all AbstractText-Tags:
                         if elem.find("CopyrightInformation") is not None:
-                            DBAbstract.copyright_information = elem.find("CopyrightInformation").text
-                        DBCitation.abstracts.append(DBAbstract)
+                            db_abstract.copyright_information = elem.find("CopyrightInformation").text
+                        db_citation.abstracts.append(db_abstract)
                     # end Kersten - code changed
 
                     """
                     #old code:
                     if elem.tag == "Abstract":
-                        DBAbstract = PubMedDB.Abstract()
-                        DBCitation.abstracts = []
+                        db_abstract = Abstract()
+                        db_citation.abstracts = []
 
-                        if elem.find("AbstractText") is not None:   DBAbstract.abstract_text = elem.find("AbstractText").text
-                        if elem.find("CopyrightInformation") is not None:   DBAbstract.copyright_information = elem.find("CopyrightInformation").text
-                        DBCitation.abstracts.append(DBAbstract)
+                        if elem.find("AbstractText") is not None:   db_abstract.abstract_text = elem.find("AbstractText").text
+                        if elem.find("CopyrightInformation") is not None:   db_abstract.copyright_information = elem.find("CopyrightInformation").text
+                        db_citation.abstracts.append(db_abstract)
                     """
                     if elem.tag == "KeywordList":
-                        # catch KeyError in case there is no Owner attribute before committing DBCitation
+                        # catch KeyError in case there is no Owner attribute before committing db_citation
                         try:
-                            DBCitation.keyword_list_owner = elem.attrib["Owner"]
+                            db_citation.keyword_list_owner = elem.attrib["Owner"]
                         except Exception:
                             pass
-                        DBCitation.keywords = []
+                        db_citation.keywords = []
                         all_keywords = []
                         for subelem in elem:
                             # some documents contain duplicate keywords which would lead to a key error - if-clause
@@ -670,38 +607,34 @@ class MedlineParser:
                                 all_keywords.append(subelem.text)
                             else:
                                 continue
-                            DBKeyword = Keyword()
-                            DBKeyword.keyword = subelem.text
-                            # catch KeyError in case there is no MajorTopicYN attribute before committing DBCitation
+                            db_keyword = Keyword()
+                            db_keyword.keyword = subelem.text
+                            # catch KeyError in case there is no MajorTopicYN attribute before committing db_citation
                             try:
-                                DBKeyword.keyword_major_yn = subelem.attrib["MajorTopicYN"]
+                                db_keyword.keyword_major_yn = subelem.attrib["MajorTopicYN"]
                             except Exception:
                                 pass
 
                             # null check for keyword
-                            if DBKeyword.keyword is not None:
-                                DBCitation.keywords.append(DBKeyword)
+                            if db_keyword.keyword is not None:
+                                db_citation.keywords.append(db_keyword)
 
                     if elem.tag == "Affiliation":
-                        if len(elem.text) < 2000:
-                            DBCitation.article_affiliation = elem.text
-                        else:
-                            DBCitation.article_affiliation = elem.text[0:1996] + "..."
+                        db_citation.article_affiliation = es(elem, 2000)
 
                     if elem.tag == "SupplMeshList":
-                        DBCitation.suppl_mesh_names = []
+                        db_citation.suppl_mesh_names = []
                         for suppl_mesh in elem:
-                            DBSupplMeshName = SupplMeshName()
-                            if len(suppl_mesh.text) < 80:
-                                DBSupplMeshName.suppl_mesh_name = suppl_mesh.text
-                            else:
-                                DBSupplMeshName.suppl_mesh_name = suppl_mesh.text[0:76] + "..."
-                            DBSupplMeshName.suppl_mesh_name_ui = suppl_mesh.attrib["UI"]
-                            DBSupplMeshName.suppl_mesh_name_type = suppl_mesh.attrib["Type"]
-                            DBCitation.suppl_mesh_names.append(DBSupplMeshName)
+                            db_suppl_mesh_name = SupplMeshName()
+                            db_suppl_mesh_name.suppl_mesh_name = es(suppl_mesh, 80)
+                            db_suppl_mesh_name.suppl_mesh_name_ui = suppl_mesh.attrib["UI"]
+                            db_suppl_mesh_name.suppl_mesh_name_type = suppl_mesh.attrib["Type"]
+                            db_citation.suppl_mesh_names.append(db_suppl_mesh_name)
 
-            await db.commit()
-            await db.connection.close()
+            db.commit()
+        print(f"Finishing file: {self.filepath}")
+        with open(logfile, "a+") as fobj:
+            fobj.write(self.filepath + "\n")
         return True
 
 
@@ -718,9 +651,10 @@ def _start_parser(path_and_check):
     """
     Used to start MultiProcessor Parsing
     """
-    print(path_and_check, "\tpid:", os.getpid())
-    asyncio.run(MedlineParser(path_and_check[0])._parse(path_and_check[1]))
-    return path_and_check[1]
+    print(f"Processing file: {path_and_check[0]=}, pid: {os.getpid()=}")
+    # asyncio.run(MedlineParser(path_and_check[0])._parse(path_and_check[1]))
+    MedlineParser(path_and_check[0]).parse(path_and_check[1])
+    return True
 
 
 async def gather_with_concurrency(n, *tasks):
@@ -743,11 +677,11 @@ def refresh_tables():
 
 
 def run(medline_path, clean, start, end, processes):
-    with sync_session.begin() as session:
-        check_existing = session.query(Citation).count() > 0
+    with sync_session.begin() as db:
+        existing_pmids = db.session.scalars(select(Citation.pmid)).all()
+        print(f"Found {len(existing_pmids)=} existing entries")
 
-    if end is not None:
-        end = int(end)
+    end = int(end) if end else None
 
     if clean:
         refresh_tables()
@@ -758,22 +692,23 @@ def run(medline_path, clean, start, end, processes):
                 paths.append(os.path.join(root, filename))
     paths.sort()
 
-    pool = Pool(processes=processes)  # start with processors
-    result = pool.map_async(
-        _start_parser,
-        [
-            (
-                path,
-                check_existing,
-            )
-            for path in paths[start:end]
-        ],
-    )
-    result.get()
+    existing = set(existing_pmids)
+    with Pool(processes=processes) as pool:
+        result = pool.map_async(
+            _start_parser,
+            [
+                (
+                    path,
+                    existing,
+                )
+                for path in paths[start:end]
+            ],
+        )
+        result.get()
 
     # without multiprocessing:
     # for path in paths:
-    #    _start_parser(path)
+    #    _start_parser(( path, existing,))
 
     # with async
     # asyncio.run(gather_with_concurrency(10, *([MedlineParser(apath)._parse() for apath in paths[start:end]])))
@@ -786,16 +721,13 @@ if __name__ == "__main__":
     medline_path = os.environ.get("PMPG_MEDLINE_PATH", "data/xmls/")
     clean = str(os.environ.get("PMPG_CLEAN", False)).lower() == "true"
 
-    print(f"Launching with {start=}, {end=}, {processes=}t, {medline_path=}, {clean=}")
-    import sys
-
-    sys.exit(0)
+    print(f"Launching with {start=}, {end=}, {processes=}, {medline_path=}, {clean=}")
     # log start time of programme:
-    start = time.asctime()
+    before = time.asctime()
     run(medline_path, clean, int(start), end, int(processes))
     # end time programme
-    end = time.asctime()
+    after = time.asctime()
 
     print("############################################################")
-    print(f"Programme started: {start} - ended: {end}")
+    print(f"Programme started: {before} - ended: {after}")
     print("############################################################")

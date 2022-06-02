@@ -7,7 +7,6 @@ from pubmedpg.core.config import settings
 # an Engine, which the Session will use for connection
 # resources
 sync_engine = create_engine(settings.SQLALCHEMY_DATABASE_URI)
-
 # a sessionmaker(), also in the same scope as the engine
 sync_session = sessionmaker(sync_engine)
 
