@@ -10,7 +10,7 @@ services:
   pubmedpg:
     image: pubmedpg
     volumes:
-      - ./data/xmls:/app/data/xmls
+      - ./data:/app/data
       - ./src:/app
     env_file:
       - .env

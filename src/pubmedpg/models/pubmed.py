@@ -39,7 +39,7 @@ class Citation(Base):
     article_title = Column(String(4000), nullable=False)
     start_page = Column(String(10))
     end_page = Column(String(10))
-    medline_pgn = Column(String(200))
+    medline_pgn = Column(String(400))
     article_affiliation = Column(String(2000))
     article_author_list_comp_yn = Column(YESNO_ENUM, default="Y")
     data_bank_list_complete_yn = Column(YESNO_ENUM, default="Y")
@@ -86,14 +86,14 @@ class Journal(Base):
     )
     issn = Column(String(30), index=True)
     issn_type = Column(String(30))
-    volume = Column(String(200))
-    issue = Column(String(200))
+    volume = Column(String(500))
+    issue = Column(String(500))
     pub_date_year = Column(Integer, index=True)
     pub_date_month = Column(String(20))
     pub_date_day = Column(String(2))
     medline_date = Column(String(40))
     title = Column(String(2000))
-    iso_abbreviation = Column(String(100))
+    iso_abbreviation = Column(String(200))
 
     def __repr__(self):
         return "Journal ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})".format(
@@ -135,7 +135,7 @@ class Abstract(Base):
         primary_key=True,
     )
     abstract_text = Column(Text)
-    copyright_information = Column(String(2000))
+    copyright_information = Column(String(4000))
 
     def __repr__(self):
         return f"Abstract: ({self.copyright_information}) \n\n{self.abstract_text}"
@@ -300,7 +300,7 @@ class Keyword(Base):
         ForeignKey("citation.pmid", deferrable=True, initially="DEFERRED", ondelete="CASCADE", onupdate="CASCADE"),
         primary_key=True,
     )
-    keyword = Column(String(500), nullable=False, index=True, primary_key=True)
+    keyword = Column(String(1000), nullable=False, index=True, primary_key=True)
     keyword_major_yn = Column(YESNO_ENUM, default="N")
 
     def __repr__(self):
@@ -375,7 +375,7 @@ class Author(Base):
     fore_name = Column(String(100))
     initials = Column(String(10))
     suffix = Column(String(20))
-    collective_name = Column(String(2000), index=True)
+    collective_name = Column(String(2700), index=True)
 
     def __repr__(self):
         return f"Author ({self.last_name}, {self.fore_name}, {self.initials}, {self.suffix}, {self.collective_name})"
@@ -417,7 +417,7 @@ class Accession(Base):
         primary_key=True,
     )
     data_bank_name = Column(String(300), nullable=False, index=True, primary_key=True)
-    accession_number = Column(String(100), nullable=False, index=True, primary_key=True)
+    accession_number = Column(String(200), nullable=False, index=True, primary_key=True)
 
     def __repr__(self):
         return f"Accession ({self.data_bank_name}, {self.accession_number})"

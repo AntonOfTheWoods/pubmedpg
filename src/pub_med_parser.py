@@ -8,7 +8,7 @@ import warnings
 import xml.etree.cElementTree as etree
 from multiprocessing import Pool
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -157,11 +157,12 @@ def set_keywords(db_citation, elem):
     for subelem in elem:
         # some documents contain duplicate keywords which would lead to a key error - if-clause
         if subelem.text not in all_keywords:
-            all_keywords.append(subelem.text)
+            all_keywords.append(subelem.text[:1000] if subelem.text is not None else None)
         else:
             continue
         db_keyword = Keyword()
-        db_keyword.keyword = subelem.text
+        if subelem.text is not None:
+            db_keyword.keyword = subelem.text[:1000]
         # catch KeyError in case there is no MajorTopicYN attribute before committing db_citation
         try:
             db_keyword.keyword_major_yn = subelem.attrib["MajorTopicYN"]
@@ -276,8 +277,7 @@ def set_authors(db_citation, elem):
     db_citation.authors = []
     for author in elem:
         db_author = init_person(author, Author())
-        if author.find("CollectiveName") is not None:
-            db_author.collective_name = author.find("CollectiveName").text
+        db_author.collective_name = es(author.find("CollectiveName"), 2700)
         db_citation.authors.append(db_author)
 
 
@@ -490,12 +490,12 @@ def set_databanks_accessions(db_citation, elem):
         if acc_numbers is not None and temp_name is not None:
             for acc_number in acc_numbers:
                 # check unique accession number per PubMed ID and data_bank_name
-                if acc_number.text not in all_acc_numbers[temp_name]:
+                if acc_number.text and acc_number.text not in all_acc_numbers[temp_name]:
                     db_accession = Accession()
                     db_accession.data_bank_name = db_data_bank.data_bank_name
-                    db_accession.accession_number = acc_number.text
+                    db_accession.accession_number = es(acc_number, 200)
                     db_citation.accessions.append(db_accession)
-                    all_acc_numbers[temp_name].append(acc_number.text)
+                    all_acc_numbers[temp_name].append(es(acc_number, 200))
 
 
 def set_grants(db_citation, elem):
@@ -594,9 +594,13 @@ def set_citation_journal_values(db_citation, db_journal, elem, pubmed_id, db_xml
     set_suppl_mesh_list(db_citation, elem)
 
 
+good_entries = {}
+
+
 class MedlineParser:
     def __init__(self, filepath):
         self.filepath = filepath
+        # self.good_entries = filepath[1]
         engine = create_engine(settings.SQLALCHEMY_DATABASE_URI)
         self.session = Session(engine)
 
@@ -616,7 +620,7 @@ class MedlineParser:
         #     return True
         a = self.session.query(XmlFile.xml_file_name).filter_by(xml_file_name=xml_name)
         if a.all():
-            print(f"Processing file: {self.filepath} already processed")
+            print(f"Processing file: {self.filepath}, {datetime.datetime.now()} already processed")
             return True
         return False
 
@@ -646,17 +650,26 @@ class MedlineParser:
         #     db_citation = Citation()
         #     db_journal = Journal()
         #     elem.clear()
-        #     await db.commit()
+        #     await self.session.commit()
         #     continue
         # else:
 
-    def parse(self, existing_pmids: set[int]):
+    def parse(self):
         try:
             xml_name = os.path.split(self.filepath)[-1]
             if self.already_parsed(xml_name):
                 return True
+            # existing_ids = set()
+            # existing_ids_file = f"{self.filepath}.txt"
+            # if os.path.exists(existing_ids_file):
+            #     tmp_existing = []
+            #     with open(existing_ids_file, "r") as f:
+            #         for line in f:
+            #             if line.strip():
+            #                 tmp_existing.append(line.split(":")[0].strip())
+            #     result = self.session.execute(select(Citation.pmid).where(Citation.pmid.in_(tmp_existing)))
+            #     existing_ids = set(result.scalars().all())
 
-            db = self.session
             _file = self.filepath
             if os.path.splitext(self.filepath)[-1] == ".gz":
                 _file = gzip.open(_file, "rb")
@@ -677,12 +690,16 @@ class MedlineParser:
             db_xml_file.time_processed = datetime.datetime.now()  # time.localtime()
 
             loop_counter = 0  # to check for memory usage each X loops
+            already_present = 0
             pubmed_id = 0
-
+            file_ids_processed = set()
+            # print(f"{len(good_entries)=}")
             for event, elem in context:
                 if event == "end":
                     if elem.tag == "MedlineCitation" or elem.tag == "BookDocument":
                         loop_counter += 1
+                        # if loop_counter % 2000 == 0:
+                        #     print(f"{xml_name=}: {loop_counter=}")
                         set_owner_status(db_citation, elem)
                         db_citation.journals = [db_journal]
 
@@ -690,31 +707,28 @@ class MedlineParser:
                         db_citation.pmid = pubmed_id
 
                         try:
-                            # result = await db.execute(select(Citation).where(Citation.pmid == pubmed_id))
-                            # same_pmid = result.scalars().all()
-                            if pubmed_id in existing_pmids:
+                            # same_pmid = False
+                            # result = self.session.execute(select(Citation).where(Citation.pmid == pubmed_id))
+                            # same_pmid = len(result.scalars().all()) > 0
+                            if pubmed_id in file_ids_processed or good_entries.get(pubmed_id) != xml_name:
+                                # print(f"{pubmed_id=}, {good_entries.get(pubmed_id)=}, {xml_name=}")
+                                already_present += 1
                                 db_citation = Citation()
                                 db_journal = Journal()
                                 elem.clear()
                                 continue
-                            self.manage_updates()
+                            file_ids_processed.add(pubmed_id)
+                            # self.manage_updates()
                             db_citation.xml_files = [db_xml_file]  # adds an implicit add()
-                            db.add(db_citation)
-
-                            # If you don't have enough memory for the processes you can use the following code:
-                            # It does mean that you can't rely on the xml_files table to be filled with the correct
-                            # number of entries, so you should use the logfile code commented above and below.
-                            # if loop_counter % 2000 == 0:
-                            #     print(f"Committing on: {db_xml_file.xml_file_name}, {loop_counter=}")
-                            #     db.commit()
+                            self.session.add(db_citation)
 
                         except IntegrityError as error:
                             warnings.warn(f"\nFile: {db_xml_file.xml_file_name}\nIntegrityError: {error}", Warning)
-                            db.rollback()
+                            self.session.rollback()
                             raise
                         except Exception as e:
                             warnings.warn(f"\nFile: {db_xml_file.xml_file_name}\nUnknown error: {e}", Warning)
-                            db.rollback()
+                            self.session.rollback()
                             raise
 
                         db_citation = Citation()
@@ -722,15 +736,16 @@ class MedlineParser:
                         elem.clear()
                     set_citation_journal_values(db_citation, db_journal, elem, pubmed_id, db_xml_file)
 
-            db.commit()
-            print(f"Finishing file: {self.filepath}")
-            # with open(logfile, "a+") as fobj:
-            #     fobj.write(self.filepath + "\n")
+            self.session.commit()
+            print(
+                f"Finishing file: {self.filepath}, {datetime.datetime.now()} with {loop_counter=} citations"
+                f" {already_present=}."
+            )
             return True
         except Exception as e:
             warnings.warn(f"\nFile: {self.filepath}\nUnknown error: {e}", Warning)
             traceback.print_exc()
-            db.rollback()
+            self.session.rollback()
             return False
 
 
@@ -743,13 +758,13 @@ def get_memory_usage(pid=os.getpid(), format="%mem"):
     return float(os.popen("ps -p %d -o %s | tail -1" % (pid, format)).read().strip())
 
 
-def _start_parser(path_and_check):
+def _start_parser(path):
     """
     Used to start MultiProcessor Parsing
     """
-    print(f"Processing file: {path_and_check[0]=}, pid: {os.getpid()=}")
+    print(f"Processing file: {path=}, {datetime.datetime.now()}, pid: {os.getpid()=}")
     # asyncio.run(MedlineParser(path_and_check[0])._parse(path_and_check[1]))
-    MedlineParser(path_and_check[0]).parse(path_and_check[1])
+    MedlineParser(path).parse()
     return True
 
 
@@ -773,34 +788,36 @@ def refresh_tables():
 
 
 def run(medline_path, clean, start, end, processes, baseline):
-    existing_pmids = []
-    with sync_session.begin() as db:
-        existing_pmids = db.session.scalars(select(Citation.pmid)).all()
-        print(f"Found {len(existing_pmids)=} existing entries")
-
     end = int(end) if end else None
 
     if clean:
         refresh_tables()
-    paths = []
+    xml_paths = []
+    xml_ids_paths = []
     for root, dirs, files in os.walk(medline_path):
         for filename in files:
-            if os.path.splitext(filename)[-1] in [".xml", ".gz"]:
-                paths.append(os.path.join(root, filename))
-    paths.sort()
+            # if os.path.splitext(filename)[-1] in [".xml", ".gz"]:
+            if filename.endswith(".xml") or filename.endswith(".xml.gz"):
+                xml_paths.append(os.path.join(root, filename))
+            elif filename.endswith(".xml.txt") or filename.endswith(".xml.gz.txt"):
+                xml_ids_paths.append(os.path.join(root, filename))
+    xml_paths.sort()
+    xml_ids_paths.sort()
+    # print("the xml_ids_paths: ", xml_ids_paths)
+    # print("the xml_paths: ", xml_paths)
+    print(f"Found {len(xml_paths)} files to parse.")
+    print(f"Found {len(xml_ids_paths)} id files to parse and load.")
+    for xml_ids_path in xml_ids_paths:
+        with open(xml_ids_path, "r") as f:
+            for line in f:
+                if line.strip():
+                    good_entries[int(line.split(":")[0].strip())] = os.path.basename(xml_ids_path).removesuffix(".txt")
 
-    existing = set(existing_pmids)
+    # print("found some stuffs: ", len(good_entries), list(good_entries.items())[:10])
+    # import sys; sys.exit(0)
     with Pool(processes=processes) as pool:
-        result = pool.map_async(
-            _start_parser,
-            [
-                (
-                    path,
-                    existing,
-                )
-                for path in paths[start:end]
-            ],
-        )
+        result = pool.map_async(_start_parser, xml_paths[start:end])
+        result.wait()
         result.get()
 
     # without multiprocessing:

@@ -1,8 +1,8 @@
 """Initial db structure
 
-Revision ID: ae0374b367af
+Revision ID: d3a2d5b30f78
 Revises:
-Create Date: 2022-06-02 04:09:19.781593
+Create Date: 2022-06-02 14:13:58.671682
 
 """
 import sqlalchemy as sa
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "ae0374b367af"
+revision = "d3a2d5b30f78"
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -233,7 +233,7 @@ def upgrade():
     op.create_table(
         "keyword",
         sa.Column("pmid", sa.Integer(), nullable=False),
-        sa.Column("keyword", sa.String(length=500), nullable=False),
+        sa.Column("keyword", sa.String(length=1000), nullable=False),
         sa.Column("keyword_major_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
