@@ -3,6 +3,7 @@ services:
     ports:
       - "25432:5432"
     image: postgres:15beta1
+    shm_size: 4g
     volumes:
       - db-data:/var/lib/postgresql/data
     env_file:

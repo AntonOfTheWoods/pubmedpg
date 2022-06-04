@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import gzip
 import os
@@ -12,6 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from pubmedpg import ensure_id_files
 from pubmedpg.core.config import settings
 from pubmedpg.db.base import Base
 from pubmedpg.models.pubmed import (
@@ -600,7 +600,6 @@ good_entries = {}
 class MedlineParser:
     def __init__(self, filepath):
         self.filepath = filepath
-        # self.good_entries = filepath[1]
         engine = create_engine(settings.SQLALCHEMY_DATABASE_URI)
         self.session = Session(engine)
 
@@ -609,15 +608,6 @@ class MedlineParser:
             self.session.close()
 
     def already_parsed(self, xml_name):
-        # logfile = os.path.join(os.path.dirname(self.filepath), "processed_xmls.txt")
-        # if os.path.exists(logfile):
-        #     with open(logfile, "r") as f:
-        #         processed_xmls = set(f.read().splitlines())
-        # else:
-        #     processed_xmls = set()
-        # if self.filepath in processed_xmls:
-        #     print(f"Processing file: {self.filepath} already processed")
-        #     return True
         a = self.session.query(XmlFile.xml_file_name).filter_by(xml_file_name=xml_name)
         if a.all():
             print(f"Processing file: {self.filepath}, {datetime.datetime.now()} already processed")
@@ -659,17 +649,6 @@ class MedlineParser:
             xml_name = os.path.split(self.filepath)[-1]
             if self.already_parsed(xml_name):
                 return True
-            # existing_ids = set()
-            # existing_ids_file = f"{self.filepath}.txt"
-            # if os.path.exists(existing_ids_file):
-            #     tmp_existing = []
-            #     with open(existing_ids_file, "r") as f:
-            #         for line in f:
-            #             if line.strip():
-            #                 tmp_existing.append(line.split(":")[0].strip())
-            #     result = self.session.execute(select(Citation.pmid).where(Citation.pmid.in_(tmp_existing)))
-            #     existing_ids = set(result.scalars().all())
-
             _file = self.filepath
             if os.path.splitext(self.filepath)[-1] == ".gz":
                 _file = gzip.open(_file, "rb")
@@ -687,13 +666,12 @@ class MedlineParser:
 
             db_xml_file = XmlFile()
             db_xml_file.xml_file_name = xml_name
-            db_xml_file.time_processed = datetime.datetime.now()  # time.localtime()
+            db_xml_file.time_processed = datetime.datetime.now()
 
             loop_counter = 0  # to check for memory usage each X loops
             already_present = 0
             pubmed_id = 0
             file_ids_processed = set()
-            # print(f"{len(good_entries)=}")
             for event, elem in context:
                 if event == "end":
                     if elem.tag == "MedlineCitation" or elem.tag == "BookDocument":
@@ -707,11 +685,7 @@ class MedlineParser:
                         db_citation.pmid = pubmed_id
 
                         try:
-                            # same_pmid = False
-                            # result = self.session.execute(select(Citation).where(Citation.pmid == pubmed_id))
-                            # same_pmid = len(result.scalars().all()) > 0
                             if pubmed_id in file_ids_processed or good_entries.get(pubmed_id) != xml_name:
-                                # print(f"{pubmed_id=}, {good_entries.get(pubmed_id)=}, {xml_name=}")
                                 already_present += 1
                                 db_citation = Citation()
                                 db_journal = Journal()
@@ -749,33 +723,13 @@ class MedlineParser:
             return False
 
 
-def get_memory_usage(pid=os.getpid(), format="%mem"):
-    """
-    Get the Memory Usage from a specific process
-    @pid = Process ID
-    @format = % or kb (%mem or rss) ...
-    """
-    return float(os.popen("ps -p %d -o %s | tail -1" % (pid, format)).read().strip())
-
-
-def _start_parser(path):
+def start_parser(path):
     """
     Used to start MultiProcessor Parsing
     """
     print(f"Processing file: {path=}, {datetime.datetime.now()}, pid: {os.getpid()=}")
-    # asyncio.run(MedlineParser(path_and_check[0])._parse(path_and_check[1]))
     MedlineParser(path).parse()
     return True
-
-
-async def gather_with_concurrency(n, *tasks):
-    semaphore = asyncio.Semaphore(n)
-
-    async def sem_task(task):
-        async with semaphore:
-            return await task
-
-    return await asyncio.gather(*(sem_task(task) for task in tasks))
 
 
 def refresh_tables():
@@ -792,40 +746,31 @@ def run(medline_path, clean, start, end, processes, baseline):
 
     if clean:
         refresh_tables()
+
     xml_paths = []
-    xml_ids_paths = []
-    for root, dirs, files in os.walk(medline_path):
+    for root, _dirs, files in os.walk(medline_path):
         for filename in files:
-            # if os.path.splitext(filename)[-1] in [".xml", ".gz"]:
             if filename.endswith(".xml") or filename.endswith(".xml.gz"):
                 xml_paths.append(os.path.join(root, filename))
-            elif filename.endswith(".xml.txt") or filename.endswith(".xml.gz.txt"):
-                xml_ids_paths.append(os.path.join(root, filename))
     xml_paths.sort()
-    xml_ids_paths.sort()
-    # print("the xml_ids_paths: ", xml_ids_paths)
-    # print("the xml_paths: ", xml_paths)
-    print(f"Found {len(xml_paths)} files to parse.")
-    print(f"Found {len(xml_ids_paths)} id files to parse and load.")
-    for xml_ids_path in xml_ids_paths:
+    print("First pass processing files, calculating existing ids")
+    ensure_id_files(xml_paths, processes)
+
+    print(f"Found {len(xml_paths)} files to parse, loading ids.")
+    for xml_ids_path in [f"{path}.txt" for path in xml_paths]:
         with open(xml_ids_path, "r") as f:
             for line in f:
                 if line.strip():
                     good_entries[int(line.split(":")[0].strip())] = os.path.basename(xml_ids_path).removesuffix(".txt")
 
-    # print("found some stuffs: ", len(good_entries), list(good_entries.items())[:10])
-    # import sys; sys.exit(0)
     with Pool(processes=processes) as pool:
-        result = pool.map_async(_start_parser, xml_paths[start:end])
+        result = pool.map_async(start_parser, xml_paths[start:end])
         result.wait()
         result.get()
 
     # without multiprocessing:
     # for path in paths:
     #    _start_parser(( path, existing,))
-
-    # with async
-    # asyncio.run(gather_with_concurrency(10, *([MedlineParser(apath)._parse() for apath in paths[start:end]])))
 
 
 if __name__ == "__main__":

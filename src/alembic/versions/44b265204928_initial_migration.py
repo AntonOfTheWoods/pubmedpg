@@ -1,8 +1,8 @@
-"""Initial db structure
+"""Initial migration
 
-Revision ID: d3a2d5b30f78
+Revision ID: 44b265204928
 Revises:
-Create Date: 2022-06-02 14:13:58.671682
+Create Date: 2022-06-03 15:05:44.280588
 
 """
 import sqlalchemy as sa
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "d3a2d5b30f78"
+revision = "44b265204928"
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -52,7 +52,7 @@ def upgrade():
         sa.Column("article_title", sa.String(length=4000), nullable=False),
         sa.Column("start_page", sa.String(length=10), nullable=True),
         sa.Column("end_page", sa.String(length=10), nullable=True),
-        sa.Column("medline_pgn", sa.String(length=200), nullable=True),
+        sa.Column("medline_pgn", sa.String(length=400), nullable=True),
         sa.Column("article_affiliation", sa.String(length=2000), nullable=True),
         sa.Column("article_author_list_comp_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
         sa.Column("data_bank_list_complete_yn", sa.Enum("Y", "N", "y", "n", name="yesno"), nullable=True),
@@ -77,7 +77,7 @@ def upgrade():
         "abstract",
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("abstract_text", sa.Text(), nullable=True),
-        sa.Column("copyright_information", sa.String(length=2000), nullable=True),
+        sa.Column("copyright_information", sa.String(length=4000), nullable=True),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
@@ -87,7 +87,7 @@ def upgrade():
         "accession",
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("data_bank_name", sa.String(length=300), nullable=False),
-        sa.Column("accession_number", sa.String(length=100), nullable=False),
+        sa.Column("accession_number", sa.String(length=200), nullable=False),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
@@ -103,7 +103,7 @@ def upgrade():
         sa.Column("fore_name", sa.String(length=100), nullable=True),
         sa.Column("initials", sa.String(length=10), nullable=True),
         sa.Column("suffix", sa.String(length=20), nullable=True),
-        sa.Column("collective_name", sa.String(length=2000), nullable=True),
+        sa.Column("collective_name", sa.String(length=2700), nullable=True),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
@@ -202,14 +202,14 @@ def upgrade():
         sa.Column("pmid", sa.Integer(), nullable=False),
         sa.Column("issn", sa.String(length=30), nullable=True),
         sa.Column("issn_type", sa.String(length=30), nullable=True),
-        sa.Column("volume", sa.String(length=200), nullable=True),
-        sa.Column("issue", sa.String(length=200), nullable=True),
+        sa.Column("volume", sa.String(length=500), nullable=True),
+        sa.Column("issue", sa.String(length=500), nullable=True),
         sa.Column("pub_date_year", sa.Integer(), nullable=True),
         sa.Column("pub_date_month", sa.String(length=20), nullable=True),
         sa.Column("pub_date_day", sa.String(length=2), nullable=True),
         sa.Column("medline_date", sa.String(length=40), nullable=True),
         sa.Column("title", sa.String(length=2000), nullable=True),
-        sa.Column("iso_abbreviation", sa.String(length=100), nullable=True),
+        sa.Column("iso_abbreviation", sa.String(length=200), nullable=True),
         sa.ForeignKeyConstraint(
             ["pmid"], ["citation.pmid"], onupdate="CASCADE", ondelete="CASCADE", initially="DEFERRED", deferrable=True
         ),
